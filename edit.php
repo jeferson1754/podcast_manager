@@ -1,5 +1,5 @@
 <?php // 
-$type = isset($_GET['type']) ? $_GET['type'] : 'podcasts';
+$type = isset($_GET['type']) ? $_GET['type'] : $podcast;
 $id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
 
 include('bd.php');
@@ -8,7 +8,7 @@ if ($conn->connect_error) {
     die('Connection Error');
 }
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if ($type == 'podcasts') {
+    if ($type == $podcast) {
         $title = $_POST['title'];
         $image = $_POST['image'];
         $link = $_POST['link'];
@@ -17,14 +17,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->bind_param("ssssi", $title, $image, $link, $state, $id);
         $stmt->execute();
         $stmt->close();
-    } elseif ($type == 'seasons') {
+    } elseif ($type == $temporadas) {
         $podcast_id = $_POST['podcast_id'];
         $number = $_POST['number'];
         $stmt = $conn->prepare("UPDATE seasons SET podcast_id = ?, number = ? WHERE id = ?");
         $stmt->bind_param("iii", $podcast_id, $number, $id);
         $stmt->execute();
         $stmt->close();
-    } elseif ($type == 'episodes') {
+    } elseif ($type == $episodios) {
         $season_id = $_POST['season_id'];
         $number = $_POST['number'];
         $title = $_POST['title'];
@@ -38,13 +38,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Location: index.php?section=' . $type);
     exit;
 } // Fetch current values 
-if ($type == 'podcasts') {
+if ($type == $podcast) {
     $result = $conn->query("SELECT * FROM podcasts WHERE id = $id");
     $data = $result->fetch_assoc();
-} elseif ($type == 'seasons') {
+} elseif ($type == $temporadas) {
     $result = $conn->query("SELECT * FROM seasons WHERE id = $id");
     $data = $result->fetch_assoc();
-} elseif ($type == 'episodes') {
+} elseif ($type == $episodios) {
     $result = $conn->query("SELECT * FROM episodes WHERE id = $id");
     $data = $result->fetch_assoc();
 }
@@ -62,7 +62,7 @@ if ($type == 'podcasts') {
 <body>
     <div class="container mt-5">
         <h2>Editar <?php echo ucfirst($type); ?></h2>
-        <form action="" method="post"> <?php if ($type == 'podcasts'): ?>
+        <form action="" method="post"> <?php if ($type == $podcast): ?>
                 <div class="mb-3"> <label class="form-label">Titulo</label>
                     <input type="text" class="form-control" name="title" value="<?php echo htmlspecialchars($data['title']); ?>" required>
                 </div>
@@ -80,13 +80,13 @@ if ($type == 'podcasts') {
                         <option value="Inactivo" <?php echo ($data['state'] == 'Inactivo') ? 'selected' : ''; ?>>Inactivo</option>
                         <option value="Finalizado" <?php echo ($data['state'] == 'Finalizado') ? 'selected' : ''; ?>>Finalizado</option>
                     </select> </div>
-            <?php elseif ($type == 'seasons'): // Fetch podcasts for dropdown 
+            <?php elseif ($type == $temporadas): // Fetch podcasts for dropdown 
 
                                             $result2 = $conn2->query("SELECT id, title FROM podcasts");
             ?>
                 <div class="mb-3">
                     <label class="form-label">Podcast</label>
-                    <select class="form-select" name="podcast_id" required>
+                    <select class="form-select" name="podcast_id" disabled>
                         <?php while ($pod = $result2->fetch_assoc()): ?>
                             <option value="<?php echo $pod['id']; ?>" <?php echo ($data['podcast_id'] == $pod['id']) ? 'selected' : ''; ?>>
                                 <?php echo htmlspecialchars($pod['title']); ?></option>
@@ -98,7 +98,7 @@ if ($type == 'podcasts') {
                     <label class="form-label">Numero de Temporada</label>
                     <input type="number" class="form-control" name="number" value="<?php echo htmlspecialchars($data['number']); ?>" required>
                 </div>
-            <?php elseif ($type == 'episodes'): // Fetch seasons for dropdown 
+            <?php elseif ($type == $episodios): // Fetch seasons for dropdown 
                                             $result2 = $conn2->query("SELECT seasons.id, podcasts.title, seasons.number FROM seasons INNER JOIN podcasts ON podcasts.id = seasons.podcast_id;");
             ?> <div class="mb-3">
                     <label class="form-label">Temporada</label>

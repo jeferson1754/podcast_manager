@@ -12,7 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $stmt->execute();
     $stmt->close();
     $conn->close();
-    header('Location: index.php?section=podcasts');
+    header('Location: index.php?section=' . $podcast . '');
     exit;
 }
 ?>

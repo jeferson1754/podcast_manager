@@ -128,16 +128,16 @@ include('bd.php');
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item me-2">
-                        <a class="nav-link px-3 py-2 <?php echo (!isset($_GET['section']) || $_GET['section'] == 'podcasts') ? 'active' : ''; ?>" href="index.php?section=podcasts">Podcasts</a>
+                        <a class="nav-link px-3 py-2 <?php echo (!isset($_GET['section']) || $_GET['section'] == $podcast) ? 'active' : ''; ?>" href="index.php?section=<?= $podcast ?>">Podcasts</a>
                     </li>
                     <li class="nav-item me-2">
-                        <a class="nav-link px-3 py-2 <?php echo (isset($_GET['section']) && $_GET['section'] == 'seasons') ? 'active' : ''; ?>" href="index.php?section=seasons">Temporadas</a>
+                        <a class="nav-link px-3 py-2 <?php echo (isset($_GET['section']) && $_GET['section'] == $temporadas) ? 'active' : ''; ?>" href="index.php?section=<?= $temporadas ?>">Temporadas</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link px-3 py-2 <?php echo (isset($_GET['section']) && $_GET['section'] == 'episodes') ? 'active' : ''; ?>" href="index.php?section=episodes">Episodios</a>
+                        <a class="nav-link px-3 py-2 <?php echo (isset($_GET['section']) && $_GET['section'] == $episodios) ? 'active' : ''; ?>" href="index.php?section=<?= $episodios ?>">Episodios</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link px-3 py-2 <?php echo (isset($_GET['section']) && $_GET['section'] == 'schedule') ? 'active' : ''; ?>" href="index.php?section=schedule">Calendario Semanal</a>
+                        <a class="nav-link px-3 py-2 <?php echo (isset($_GET['section']) && $_GET['section'] == $calendario) ? 'active' : ''; ?>" href="index.php?section=<?= $calendario ?>">Calendario Semanal</a>
                     </li>
                 </ul>
             </div>
@@ -150,19 +150,19 @@ include('bd.php');
         <div class="table-header">
             <h2 id="current-section-title">
                 <?php
-                $section = isset($_GET['section']) ? $_GET['section'] : 'podcasts';
+                $section = isset($_GET['section']) ? $_GET['section'] : $podcast;
                 echo ucfirst($section);
                 ?>
             </h2>
             <div>
-                <a href="add.php?type=<?php echo $section; ?>" class="btn btn-primary">
-                    <i class="fas fa-plus me-2"></i>Nuevo Podcast
+                <a href="add.php?type=<?= $section; ?>" class="btn btn-primary">
+                    <i class="fas fa-plus me-2"></i>Nuevo <?= $section; ?>
                 </a>
             </div>
         </div>
 
         <!-- Data Tables (Only one is shown at a time based on section) -->
-        <?php if (!isset($_GET['section']) || $_GET['section'] == 'podcasts'): ?>
+        <?php if (!isset($_GET['section']) || $_GET['section'] == $podcast): ?>
             <div id="podcasts-table-container" class="table-responsive">
                 <table class="table table-hover">
                     <thead class="table-light">
@@ -180,27 +180,27 @@ include('bd.php');
                         $result = $conn->query("SELECT * FROM podcasts ORDER BY id");
 
                         if ($result->num_rows > 0) {
-                            while ($podcast = $result->fetch_assoc()) {
-                                $stateClass = $podcast['state'] === 'Activo' ? 'state-active' : ($podcast['state'] === 'Inactivo' ? 'state-inactive' : 'state-finished');
+                            while ($podcasts = $result->fetch_assoc()) {
+                                $stateClass = $podcasts['state'] === 'Activo' ? 'state-active' : ($podcasts['state'] === 'Inactivo' ? 'state-inactive' : 'state-finished');
                                 echo '<tr>';
-                                echo '<td>' . $podcast['id'] . '</td>';
+                                echo '<td>' . $podcasts['id'] . '</td>';
                                 echo '<td>';
-                                if (!empty($podcast['image'])) {
-                                    echo '<img src="' . htmlspecialchars($podcast['image']) . '" alt="Imagen de ' . $podcast['title'] . '" class="img-thumbnail" style="max-width: 80px;">';
+                                if (!empty($podcasts['image'])) {
+                                    echo '<img src="' . htmlspecialchars($podcasts['image']) . '" alt="Imagen de ' . $podcasts['title'] . '" class="img-thumbnail" style="max-width: 80px;">';
                                 } else {
                                     echo '<span class="text-muted"><i class="fas fa-image"></i> Sin Imagen</span>';
                                 }
                                 echo '</td>';
-                                echo '<td><a href="' . htmlspecialchars($podcast['description'], ENT_QUOTES, 'UTF-8') . '" target="_blank" style="text-decoration: none; color: black;">' . htmlspecialchars($podcast['title'], ENT_QUOTES, 'UTF-8') . '</a></td>';
+                                echo '<td><a href="' . htmlspecialchars($podcasts['description'], ENT_QUOTES, 'UTF-8') . '" target="_blank" style="text-decoration: none; color: black;">' . htmlspecialchars($podcasts['title'], ENT_QUOTES, 'UTF-8') . '</a></td>';
 
 
                                 echo '<td>
                     <form method="post" action="change_state.php" class="d-inline">
-                      <input type="hidden" name="id" value="' . $podcast['id'] . '">
+                      <input type="hidden" name="id" value="' . $podcasts['id'] . '">
                       <input type="hidden" name="type" value="podcast">
                       <div class="dropdown">
                         <span class="state-badge ' . $stateClass . ' dropdown-toggle" role="button" data-bs-toggle="dropdown">
-                          ' . $podcast['state'] . '
+                          ' . $podcasts['state'] . '
                         </span>
                         <ul class="dropdown-menu">
                           <li><button type="submit" name="state" value="Activo" class="dropdown-item">Activo</button></li>
@@ -211,18 +211,18 @@ include('bd.php');
                     </form>
                   </td>';
                                 echo '<td class="action-buttons">
-                    <a href="edit.php?type=podcasts&id=' . $podcast['id'] . '" class="btn btn-sm btn-outline-primary">
+                    <a href="edit.php?type=' . $podcast . '&id=' . $podcasts['id'] . '" class="btn btn-sm btn-outline-primary">
                       <i class="fas fa-edit"></i> Editar
                     </a>
-                    <a href="delete.php?type=podcasts&id=' . $podcast['id'] . '" class="btn btn-sm btn-outline-danger" 
-                       onclick="return confirm(\'Estas seguro de eliminar este podcast?\')">
+                    <a href="delete.php?type=' . $podcast . '&id=' . $podcasts['id'] . '" class="btn btn-sm btn-outline-danger" 
+                       onclick="return confirm(\'Estas seguro de eliminar este ' . $podcast . '&?\')">
                       <i class="fas fa-trash"></i> Eliminar
                     </a>
                   </td>';
                                 echo '</tr>';
                             }
                         } else {
-                            echo '<tr><td colspan="5" class="text-center">Sin Podcast</td></tr>';
+                            echo '<tr><td colspan="5" class="text-center">Sin ' . $podcast . '</td></tr>';
                         }
                         ?>
                     </tbody>
@@ -231,13 +231,13 @@ include('bd.php');
                 if ($result->num_rows == 0) {
                     echo '<div class="empty-state">
                           <i class="fas fa-podcast"></i>
-                          <h4>Sin Podcast</h4>
-                          <p>Click "Nuevo Podcast" para guardar tu primer podcast</p>
+                          <h4>Sin ' . $podcast . '</h4>
+                          <p>Click "Nuevo ' . $podcast . '" para guardar tu primer podcast</p>
                         </div>';
                 }
                 ?>
             </div>
-        <?php elseif ($_GET['section'] == 'seasons'): ?>
+        <?php elseif ($_GET['section'] == $temporadas): ?>
             <div id="seasons-table-container" class="table-responsive">
                 <table class="table table-hover">
                     <thead class="table-light">
@@ -262,18 +262,18 @@ include('bd.php');
                                 echo '<td>' . htmlspecialchars($season['podcast_title']) . '</td>';
                                 echo '<td>' . $season['number'] . '</td>';
                                 echo '<td class="action-buttons">
-                                  <a href="edit.php?type=seasons&id=' . $season['id'] . '" class="btn btn-sm btn-outline-primary">
+                                  <a href="edit.php?type=' . $temporadas . '&id=' . $season['id'] . '" class="btn btn-sm btn-outline-primary">
                                     <i class="fas fa-edit"></i> Editar
                                   </a>
-                                  <a href="delete.php?type=seasons&id=' . $season['id'] . '" class="btn btn-sm btn-outline-danger" 
-                                     onclick="return confirm(\'Estas seguro de eliminar esta temporada?\')">
+                                  <a href="delete.php?type=' . $temporadas . '&id=' . $season['id'] . '" class="btn btn-sm btn-outline-danger" 
+                                     onclick="return confirm(\'Estas seguro de eliminar esta ' . $temporadas . '?\')">
                                     <i class="fas fa-trash"></i> Eliminar
                                   </a>
                                 </td>';
                                 echo '</tr>';
                             }
                         } else {
-                            echo '<tr><td colspan="6" class="text-center">Sin Temporadas</td></tr>';
+                            echo '<tr><td colspan="6" class="text-center">Sin ' . $temporadas . '</td></tr>';
                         }
                         ?>
 
@@ -283,13 +283,13 @@ include('bd.php');
                 if ($result->num_rows == 0) {
                     echo '<div class="empty-state">
                            <i class="fas fa-layer-group"></i>
-                            <h4>Sin Temporadaras</h4>
-                          <p>Click "Nuevo Podcast" para guardar sus temporadas</p>
+                            <h4>Sin ' . $temporadas . '</h4>
+                          <p>Click "Nuevo ' . $temporadas . '" para guardar sus temporadas</p>
                         </div>';
                 }
                 ?>
             </div>
-        <?php elseif ($_GET['section'] == 'episodes'): ?>
+        <?php elseif ($_GET['section'] == $episodios): ?>
             <div id="episodes-table-container" class="table-responsive">
                 <table class="table table-hover">
                     <thead class="table-light">
@@ -324,18 +324,18 @@ include('bd.php');
                                 echo '<td>' . $episode['duration'] . '</td>';
                                 echo '<td>' . date('d-m-Y', strtotime($episode['publish_date'])) . '</td>';
                                 echo '<td class="action-buttons">
-                                  <a href="edit.php?type=episodes&id=' . $episode['id'] . '" class="btn btn-sm btn-outline-primary">
+                                  <a href="edit.php?type=' . $episodios . '&id=' . $episode['id'] . '" class="btn btn-sm btn-outline-primary">
                                     <i class="fas fa-edit"></i> Editar
                                   </a>
-                                  <a href="delete.php?type=episodes&id=' . $episode['id'] . '" class="btn btn-sm btn-outline-danger" 
-                                     onclick="return confirm(\'Estas seguro de eliminar este episodio?\')">
+                                  <a href="delete.php?type=' . $episodios . '&id=' . $episode['id'] . '" class="btn btn-sm btn-outline-danger" 
+                                     onclick="return confirm(\'Estas seguro de eliminar este ' . $episodios . '?\')">
                                     <i class="fas fa-trash"></i> Eliminar
                                   </a>
                                 </td>';
                                 echo '</tr>';
                             }
                         } else {
-                            echo '<tr><td colspan="8" class="text-center">No episodes found</td></tr>';
+                            echo '<tr><td colspan="8" class="text-center">Sin ' . $episodios . '</td></tr>';
                         }
                         ?>
 
@@ -345,13 +345,13 @@ include('bd.php');
                 if ($result->num_rows == 0) {
                     echo '<div class="empty-state">
                           <i class="fas fa-microphone-alt"></i>
-                          <h4>Sin capitulos</h4>
-                          <p>Click "Nuevo Podcast" para crear nuevos episodios</p>
+                          <h4>Sin ' . $episodios . '</h4>
+                          <p>Click "Nuevo ' . $episodios . '" para crear nuevos episodios</p>
                         </div>';
                 }
                 ?>
             </div>
-        <?php elseif ($_GET['section'] == 'schedule'): ?>
+        <?php elseif ($_GET['section'] == $calendario): ?>
             <div id="schedule-container">
                 <div class="row">
                     <?php
@@ -462,7 +462,7 @@ include('bd.php');
                         } else {
                             echo '<div class="text-center py-4">';
                             echo '<i class="fas fa-calendar-day fa-3x text-muted mb-3"></i>';
-                            echo '<p>No hay podcast para este día</p>';
+                            echo '<p>No hay ' . $podcast . ' para este día</p>';
                             echo '</div>';
                         }
 

@@ -15,5 +15,10 @@ $año = date('Y');
 $fecha_hoy = date('Y-m-d');
 $hora_actual = date('H:i');
 
+$podcast = "podcasts";
+$temporadas = "temporadas";
+$episodios = "episodios";
+$calendario = "calendario";
+
 $dias = ['Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'];
 $dia_actual = $dias[date('N') - 1];
