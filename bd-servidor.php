@@ -1,9 +1,9 @@
 <?php
-$usuario  = "root";
-$password = "";
-$servidor = "localhost";
-$basededatos = "epiz_32740026_r_user";
 
+$usuario  = "epiz_32740026";
+$password = "eJWcVk2au5gqD";
+$servidor = "sql208.epizy.com";
+$basededatos = "epiz_32740026_r_user";
 
 $conn = new mysqli($servidor, $usuario, $password, $basededatos);
 $conn2 = new mysqli($servidor, $usuario, $password, $basededatos);

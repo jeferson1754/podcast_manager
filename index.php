@@ -180,11 +180,10 @@ include('bd.php');
                         $result = $conn->query("SELECT * FROM podcasts ORDER BY id");
 
                         if ($result->num_rows > 0) {
-                            $index = 1;
                             while ($podcast = $result->fetch_assoc()) {
                                 $stateClass = $podcast['state'] === 'Activo' ? 'state-active' : ($podcast['state'] === 'Inactivo' ? 'state-inactive' : 'state-finished');
                                 echo '<tr>';
-                                echo '<td>' . $index++ . '</td>';
+                                echo '<td>' . $podcast['id'] . '</td>';
                                 echo '<td>';
                                 if (!empty($podcast['image'])) {
                                     echo '<img src="' . htmlspecialchars($podcast['image']) . '" alt="Imagen de ' . $podcast['title'] . '" class="img-thumbnail" style="max-width: 80px;">';
@@ -245,7 +244,7 @@ include('bd.php');
                         <tr>
                             <th>#</th>
                             <th>Podcast</th>
-                            <th>Numero</th>
+                            <th>Temporada</th>
                             <th>Acciones</th>
                         </tr>
                     </thead>
@@ -256,10 +255,10 @@ include('bd.php');
                                                 JOIN podcasts p ON s.podcast_id = p.id 
                                                 ORDER BY p.title, s.number");
                         if ($result->num_rows > 0) {
-                            $index = 1;
+
                             while ($season = $result->fetch_assoc()) {
                                 echo '<tr>';
-                                echo '<td>' . $index++ . '</td>';
+                                echo '<td>' . $season['id'] . '</td>';
                                 echo '<td>' . htmlspecialchars($season['podcast_title']) . '</td>';
                                 echo '<td>' . $season['number'] . '</td>';
                                 echo '<td class="action-buttons">
@@ -312,13 +311,12 @@ include('bd.php');
                                                 FROM episodes e 
                                                 JOIN seasons s ON e.season_id = s.id 
                                                 JOIN podcasts p ON s.podcast_id = p.id 
-                                                ORDER BY p.title, s.number, e.number");
+                                                ORDER BY `e`.`publish_date` DESC");
 
                         if ($result->num_rows > 0) {
-                            $index = 1;
                             while ($episode = $result->fetch_assoc()) {
                                 echo '<tr>';
-                                echo '<td>' . $index++ . '</td>';
+                                echo '<td>' . $episode['id'] . '</td>';
                                 echo '<td>' . htmlspecialchars($episode['podcast_title']) . '</td>';
                                 echo '<td> T' . $episode['season_number'] . '</td>';
                                 echo '<td>' . $episode['number'] . '</td>';
@@ -358,74 +356,108 @@ include('bd.php');
                 <div class="row">
                     <?php
 
+
+
+                    // Asegúrate de tener tu conexión a la DB en la variable $conn
+                    // include 'db_connection.php'; 
+
                     if ($conn->connect_error) {
                         die('Connection Error: ' . $conn->connect_error);
                     }
 
-                    // Get schedule information (this is a placeholder, you'd need to create a schedule table in your DB)
-                    $scheduleQuery = "SELECT * FROM schedule ORDER BY day_of_week, start_time";
-                    $scheduleResult = $conn->query($scheduleQuery);
+                    // --- PASO 1: OBTENER EL DÍA ACTUAL (Para resaltar la tarjeta) ---
+                    $dias_map = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
+                    $dia_actual = $dias_map[date('w')];
 
 
+                    // --- PASO 2: EJECUTAR LA CONSULTA ÚNICA Y OPTIMIZADA ---
+                    $scheduleQuery = "
+    SELECT
+        s.id AS schedule_id,
+        s.day_of_week,
+        s.start_time,
+        p.id AS podcast_id,
+        p.title,
+        p.image,
+        COALESCE(MAX(e.number) + 1, 1) AS episodio
+    FROM
+        schedule s
+    JOIN
+        podcasts p ON s.podcast_id = p.id
+    LEFT JOIN
+        seasons sn ON sn.podcast_id = p.id
+    LEFT JOIN
+        episodes e ON e.season_id = sn.id
+    GROUP BY
+        s.id
+    ORDER BY
+        FIELD(s.day_of_week, 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'),
+        s.start_time;
+";
 
+                    $result = $conn->query($scheduleQuery);
+
+
+                    // --- PASO 3: AGRUPAR LOS RESULTADOS POR DÍA (Sin cambios) ---
                     $days = ['Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'];
-
-                    // Agrupar podcasts por día
                     $scheduleData = [];
-                    if ($scheduleResult && $scheduleResult->num_rows > 0) {
-                        while ($schedule = $scheduleResult->fetch_assoc()) {
-                            $day = $schedule['day_of_week'];
+                    if ($result && $result->num_rows > 0) {
+                        while ($item = $result->fetch_assoc()) {
+                            $day = $item['day_of_week'];
                             if (!isset($scheduleData[$day])) {
                                 $scheduleData[$day] = [];
                             }
-                            $scheduleData[$day][] = $schedule;
+                            $scheduleData[$day][] = $item;
                         }
                     }
 
 
-                    // Mostrar programación por día
+                    // --- PASO 4: MOSTRAR LA PROGRAMACIÓN (LÓGICA CON SEPARADORES) ---
                     foreach ($days as $day) {
-                        echo '<div class="col-md-6 col-lg-4 mb-4">';
+                        echo '<div class="col-md-4 col-lg-3 mb-4">';
                         echo '<div class="card h-100">';
-                        // Cambiar color si es el día actual
+
                         $headerClass = ($day === $dia_actual) ? 'bg-success' : 'bg-primary';
 
                         echo '<div class="card-header ' . $headerClass . ' text-white">';
-                        echo '<h5 class="mb-0">' . $day . '</h5>';
+                        echo '<h5 class="mb-0">' . htmlspecialchars($day) . '</h5>';
                         echo '</div>';
                         echo '<div class="card-body">';
 
                         if (isset($scheduleData[$day])) {
-                            foreach ($scheduleData[$day] as $scheduleItem) {
-                                $podcastId = $scheduleItem['podcast_id'];
-                                $podcastQuery = "
-                SELECT p.*, COALESCE(MAX(e.number) + 1, 1) AS episodio
-                FROM podcasts p
-                LEFT JOIN seasons s ON s.podcast_id = p.id
-                LEFT JOIN episodes e ON e.season_id = s.id
-                WHERE p.id = $podcastId
-                GROUP BY p.id
-            ";
-                                $podcastResult = $conn->query($podcastQuery);
+                            // --- INICIO DE LA MODIFICACIÓN ---
+                            // 1. Obtenemos el número total de podcasts para este día.
+                            $totalPodcastsEnElDia = count($scheduleData[$day]);
 
-                                if ($podcastResult && $podcastResult->num_rows > 0) {
-                                    $podcast = $podcastResult->fetch_assoc();
+                            // 2. Modificamos el loop para obtener también el índice (0, 1, 2...).
+                            foreach ($scheduleData[$day] as $index => $scheduleItem) {
+                                // --- FIN DE LA MODIFICACIÓN ---
 
-                                    echo '<div class="d-flex align-items-center mb-3">';
-                                    if (!empty($podcast['image'])) {
-                                        echo '<img src="' . htmlspecialchars($podcast['image']) . '" alt="' . htmlspecialchars($podcast['title']) . '" class="me-3 img-thumbnail" style="width: 80px; height: 80px; object-fit: cover;">';
-                                    } else {
-                                        echo '<div class="me-3 bg-light d-flex align-items-center justify-content-center" style="width: 80px; height: 80px;"><i class="fas fa-podcast fa-2x text-secondary"></i></div>';
-                                    }
+                                // El div del podcast ya no necesita margen inferior (mb-3), la línea lo manejará.
+                                echo '<div class="d-flex align-items-center">';
 
-                                    echo '<div>';
-                                    echo '<h5 class="card-title mb-1">' . htmlspecialchars($podcast['title']) . '</h5>';
-                                    $episodio = !empty($podcast['episodio']) ? htmlspecialchars($podcast['episodio']) : '?';
-                                    echo '<p class="card-text small text-muted">Capítulo ' . $episodio . '</p>';
-                                    echo '<div><strong>Hora:</strong> ' . htmlspecialchars($scheduleItem['start_time']) . '</div>';
-                                    echo '</div>';
-                                    echo '</div>';
+                                if (!empty($scheduleItem['image'])) {
+                                    echo '<img src="' . htmlspecialchars($scheduleItem['image']) . '" alt="' . htmlspecialchars($scheduleItem['title']) . '" class="me-3 img-thumbnail" style="width: 80px; height: 80px; object-fit: cover;">';
+                                } else {
+                                    echo '<div class="me-3 bg-light d-flex align-items-center justify-content-center" style="width: 80px; height: 80px;"><i class="fas fa-podcast fa-2x text-secondary"></i></div>';
                                 }
+
+                                echo '<div>';
+                                echo '<h5 class="card-title mb-1">' . htmlspecialchars($scheduleItem['title']) . '</h5>';
+                                $episodio = !empty($scheduleItem['episodio']) ? htmlspecialchars($scheduleItem['episodio']) : '?';
+                                echo '<p class="card-text small text-muted">Capítulo ' . $episodio . '</p>';
+                                echo '<div><strong>Hora:</strong> ' . htmlspecialchars(date("H:i", strtotime($scheduleItem['start_time']))) . '</div>';
+                                echo '</div>';
+                                echo '</div>';
+
+                                // --- INICIO DE LA MODIFICACIÓN ---
+                                // 3. Comprobamos si el índice actual es menor que el último índice (total - 1).
+                                //    Si es así, significa que este NO es el último podcast y debemos mostrar la línea.
+                                if ($index < $totalPodcastsEnElDia - 1) {
+                                    // La clase "my-3" de Bootstrap añade un margen vertical a la línea para que no esté pegada.
+                                    echo '<hr class="my-3">';
+                                }
+                                // --- FIN DE LA MODIFICACIÓN ---
                             }
                         } else {
                             echo '<div class="text-center py-4">';
@@ -441,6 +473,7 @@ include('bd.php');
 
                     $conn->close();
                     ?>
+
                 </div>
             </div>
         <?php endif; ?>
