@@ -117,13 +117,77 @@ if ($type == $podcast) {
                     <label class="form-label">Titulo</label>
                     <input type="text" class="form-control" name="title" value="<?php echo htmlspecialchars($data['title']); ?>" required>
                 </div>
+
                 <div class="mb-3">
-                    <label class="form-label">Duracion</label>
-                    <input type="text" class="form-control" name="duration" value="<?php echo htmlspecialchars($data['duration']); ?>" required>
+                    <label class="form-label">Duración (máx. 10:00:00)</label>
+                    <input type="text" id="durationInput" name="duration" class="form-control" maxlength="8" value="<?php echo htmlspecialchars($data['duration']); ?>" required>
+                    <div id="errorMsg" class="invalid-feedback d-none">Duración inválida. Formato: H:MM:SS, máximo 10:00:00</div>
                 </div>
+
+                <script>
+                    const input = document.getElementById('durationInput');
+                    const errorMsg = document.getElementById('errorMsg');
+
+                    input.addEventListener('input', function(e) {
+                        let val = input.value;
+
+                        // Quitar todo lo que no sea número
+                        val = val.replace(/\D/g, '');
+
+                        // Limitar máximo 6 dígitos (HHMMSS)
+                        if (val.length > 6) val = val.slice(0, 6);
+
+                        // Insertar ":" automáticamente
+                        // Dependiendo de longitud:
+                        // 1-2 dígitos: horas
+                        // 3-4 dígitos: horas + minutos
+                        // 5-6 dígitos: horas + minutos + segundos
+
+                        if (val.length <= 2) {
+                            // Solo horas
+                            val = val;
+                        } else if (val.length <= 4) {
+                            val = val.slice(0, val.length - 2) + ':' + val.slice(-2);
+                        } else {
+                            val = val.slice(0, val.length - 4) + ':' + val.slice(-4, val.length - 2) + ':' + val.slice(-2);
+                        }
+
+                        input.value = val;
+
+                        // Validar formato completo
+                        const pattern = /^([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])$/;
+                        const match = val.match(pattern);
+
+                        if (!match) {
+                            marcarInvalido();
+                            return;
+                        }
+
+                        const horas = parseInt(match[1], 10);
+                        const minutos = parseInt(match[2], 10);
+                        const segundos = parseInt(match[3], 10);
+
+                        if (horas > 10 || (horas === 10 && (minutos > 0 || segundos > 0))) {
+                            marcarInvalido();
+                        } else {
+                            marcarValido();
+                        }
+                    });
+
+                    function marcarInvalido() {
+                        input.classList.add('is-invalid');
+                        errorMsg.classList.remove('d-none');
+                    }
+
+                    function marcarValido() {
+                        input.classList.remove('is-invalid');
+                        errorMsg.classList.add('d-none');
+                    }
+                </script>
+                
                 <div class="mb-3">
                     <label class="form-label">Fecha de Publicacion</label>
-                    <input type="date" class="form-control" name="publish_date" value="<?php echo htmlspecialchars($data['publish_date']); ?>" required>
+                    <input type="datetime-local" class="form-control" name="publish_date" value="<?php echo htmlspecialchars($data['publish_date']); ?>" required>
                 </div> <?php endif; ?>
             <button type="submit" class="btn btn-success">Actualizar</button>
             <a href="index.php?section=<?php echo $type; ?>" class="btn btn-secondary">Cancelar</a>
