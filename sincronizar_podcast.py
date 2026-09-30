@@ -28,8 +28,7 @@ API_KEY = os.getenv("API_KEY")
 # URL de tu script PHP subido a InfinityFree
 # PHP_ENDPOINT = "http://tu-subdominio.epizy.com/api_insertar.php"
 
-PHP_ENDPOINT = "http://localhost/Podcast_Manager/api_insertar.php"
-
+PHP_ENDPOINT = "https://inventarioncc.infinityfreeapp.com/Podcast%20Manager/api_insertar.php"
 TOKEN_SECRET = "MI_CLAVE_SUPER_SECRETA_123"
 # ------------------------------------------------------------------
 # FUNCIONES AUXILIARES
@@ -75,35 +74,58 @@ def obtener_json_con_selenium(driver, url):
     """
     return driver.execute_async_script(js_code)
 
-def enviar_a_php_con_session(driver, payload):
-    """Envía POST a InfinityFree heredando las cookies reales del navegador Selenium."""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
-    # Extraer las cookies que InfinityFree le dio a Selenium
-    selenium_cookies = driver.get_cookies()
-    session = requests.Session()
-    
-    for cookie in selenium_cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
+def enviar_a_php_con_session(driver, php_endpoint, payload):
+  """Envía datos por POST usando JavaScript (fetch) directamente dentro
 
-    try:
-        res = session.post(PHP_ENDPOINT, data=payload, headers=headers, timeout=15)
-        
-        try:
-            return res.json()
-        except Exception:
-            print(f"\n⚠️ [RESPUESTA RAW DE INFINITYFREE]:\n{res.text[:400]}\n")
-            return {"status": "error", "message": "Servidor devolvió HTML/Error de PHP"}
-            
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+  del navegador Selenium, evitando cualquier bloqueo de InfinityFree.
+  """
+  # 1. Asegurarnos de que el navegador esté en la URL del endpoint (para mantener el contexto y cookies)
+  if php_endpoint not in driver.current_url:
+    driver.get(php_endpoint)
+
+  # 2. Script de JavaScript que hace la petición POST asíncrona con el payload
+  script = """
+    const callback = arguments[arguments.length - 1];
+    const payloadData = arguments[0];
+
+    fetch(window.location.href, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payloadData)
+    })
+    .then(response => response.text())
+    .then(text => {
+        try {
+            // Intentar parsear la respuesta como JSON
+            callback(JSON.parse(text));
+        } catch(e) {
+            // Si devuelve HTML (bloqueo), lo devolvemos como error controlado
+            callback({status: 'error', message: 'HTML_RETURNED', raw: text});
+        }
+    })
+    .catch(error => callback({status: 'error', message: error.toString()}));
+    """
+
+  try:
+    # Ejecutar el script asíncrono en Selenium pasando el diccionario 'payload' como argumento
+    res_json = driver.execute_async_script(script, payload)
+
+    # Validar si el servidor devolvió HTML por alguna razón
+    if isinstance(res_json, dict) and res_json.get("message") == "HTML_RETURNED":
+      print(f"\n⚠️ [RESPUESTA RAW DE INFINITYFREE]:\n{res_json.get('raw')[:400]}\n")
+      return {"status": "error", "message": "Servidor devolvió HTML/Error de PHP"}
+
+    return res_json
+
+  except Exception as e:
+    return {"status": "error", "message": str(e)}
 # PROCESO PRINCIPAL
 # ------------------------------------------------------------------
 def procesar():
     print("🌐 Iniciando navegador Selenium...")
-    driver = configurar_navegador(DOWNLOAD_DIR)
+    driver = configurar_navegador(DOWNLOAD_DIR, visor=True)
     
     try:
         driver.get("https://www.google.com")
@@ -151,13 +173,16 @@ def procesar():
             channel_url = f"https://www.youtube.com/{snippet.get('customUrl', 'channel/' + channel_id)}"
 
             # 2. Registrar en PHP (vía requests para evitar CORS)
-            res_php = enviar_a_php_con_session(driver, {
+            res_php = enviar_a_php_con_session(driver,PHP_ENDPOINT, {
                 'token': TOKEN_SECRET,
                 'action': 'obtener_o_crear_podcast',
                 'nombre': nombre_canal,
                 'channel_url': channel_url,
                 'image_url': image_url
             })
+            
+            # ¡Imprime esto para ver qué respondió exactamente el servidor!
+            print('RESPUESTA DE PHP:', res_php)
 
             podcast_id = res_php.get('podcast_id')
             if not podcast_id:
@@ -208,7 +233,7 @@ def procesar():
                 publish_date = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
 
                 # 5. Insertar episodio vía PHP (Evita CORS)
-                resp_insert = enviar_a_php_con_session(driver,{
+                resp_insert = enviar_a_php_con_session(driver, PHP_ENDPOINT,{
                     'token': TOKEN_SECRET,
                     'action': 'guardar_episodio',
                     'youtube_id': yt_id,
@@ -218,6 +243,9 @@ def procesar():
                     'status': status,
                     'publish_date': publish_date
                 })
+                
+                # ¡Imprime esto para ver qué respondió exactamente el servidor!
+                print('RESPUESTA DE PHP:', resp_insert)
                 
                 print(f"  -> Video {yt_id}: {resp_insert.get('status')} ({resp_insert.get('message', '')})")
 
