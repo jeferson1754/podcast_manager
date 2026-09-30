@@ -1,0 +1,22 @@
+# Descargas
+descargas/*
+
+# Todos los .txt excepto requirements.txt
+*.txt
+!requirements.txt
+
+# Caché de Python
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Credenciales Google
+client_secret.json
+token.pickle
+
+.env
+
+historial_ejecuciones.log
+
+venv/
+
