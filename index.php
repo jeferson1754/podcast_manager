@@ -679,21 +679,111 @@ $section = $_GET['section'] ?? $podcast;
                 <?php endif; ?>
 
                 <!-- CALENDARIO -->
-            <?php elseif ($section == $calendario): ?>
+            <?php elseif ($section == $calendario):
+
+                // ==========================================
+                // 1. FUNCIÓN DE CÁLCULO Y ACTUALIZACIÓN AUTOMÁTICA
+                // ==========================================
+                // ==========================================
+                // FUNCIÓN PARA MÚLTIPLES HORARIOS SEMANALES
+                // ==========================================
+                function actualizarHorariosAutomaticos($conn)
+                {
+                    $podcastsResult = $conn->query("SELECT id FROM podcasts");
+                    if (!$podcastsResult) return;
+
+                    $dias_map_es = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
+
+                    while ($pod = $podcastsResult->fetch_assoc()) {
+                        $podcastId = $pod['id'];
+
+                        // 1. Obtener los últimos 20 episodios
+                        $stmt = $conn->prepare("SELECT publish_date FROM episodes WHERE podcast_id = ? ORDER BY publish_date DESC LIMIT 20");
+                        $stmt->bind_param("i", $podcastId);
+                        $stmt->execute();
+                        $result = $stmt->get_result();
+
+                        $episodios = [];
+                        while ($row = $result->fetch_assoc()) {
+                            $episodios[] = strtotime($row['publish_date']);
+                        }
+
+                        if (count($episodios) < 3) continue;
+
+                        // 2. Agrupar por Día y REDONDEAR a la hora en punto (ej: 17:13 y 17:16 pasan a ser las 17:00)
+                        $patrones = [];
+                        foreach ($episodios as $timestamp) {
+                            $diaSemana = $dias_map_es[date('w', $timestamp)];
+                            $horaRedondeada = date('H:00:00', $timestamp); // Agrupa por hora exacta
+
+                            $key = $diaSemana . '_' . $horaRedondeada;
+                            if (!isset($patrones[$key])) {
+                                $patrones[$key] = [
+                                    'day' => $diaSemana,
+                                    'time' => date('H:i:s', $timestamp), // Mantiene la hora exacta promedio o del primero
+                                    'count' => 0
+                                ];
+                            }
+                            $patrones[$key]['count']++;
+                        }
+
+                        // Ordenar los patrones por los que más se repiten
+                        usort($patrones, function ($a, $b) {
+                            return $b['count'] - $a['count'];
+                        });
+
+                        // 3. Filtrar para evitar que un mismo podcast aparezca 2 veces EL MISMO DÍA.
+                        // Nos quedaremos con el mejor horario por cada día de la semana detectado.
+                        $diasRegistrados = [];
+                        $horariosValidos = [];
+
+                        foreach ($patrones as $p) {
+                            $dia = $p['day'];
+                            // Si este día ya tiene un horario asignado para este podcast, lo ignoramos para evitar duplicados en el mismo día
+                            if (!isset($diasRegistrados[$dia])) {
+                                $diasRegistrados[$dia] = true;
+                                $horariosValidos[] = $p;
+                            }
+                        }
+
+                        // 4. Limpiar los horarios viejos de este podcast y guardar los limpios y filtrados
+                        if (!empty($horariosValidos)) {
+                            $stmtDel = $conn->prepare("DELETE FROM schedule WHERE podcast_id = ?");
+                            $stmtDel->bind_param("i", $podcastId);
+                            $stmtDel->execute();
+
+                            $stmtIns = $conn->prepare("INSERT INTO schedule (podcast_id, day_of_week, start_time) VALUES (?, ?, ?)");
+                            foreach ($horariosValidos as $h) {
+                                // Opcional: si quieres mostrar la hora exacta del último o la redondeada, puedes usar $h['time'] o la redondeada
+                                $stmtIns->bind_param("iss", $podcastId, $h['day'], $h['time']);
+                                $stmtIns->execute();
+                            }
+                        }
+                    }
+                }
+
+                // Ejecutar al cargar la página
+                actualizarHorariosAutomaticos($conn);
+            ?>
+
+                <!-- ========================================== -->
+                <!-- 2. TU VISTA HTML DEL HORARIO SEMANAL       -->
+                <!-- ========================================== -->
                 <div class="row g-3">
                     <?php
                     $dias_map = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
                     $dia_actual = $dias_map[date('w')];
 
+                    // Consulta que lee los horarios ya actualizados y calcula el próximo capítulo
                     $scheduleQuery = "
-                        SELECT s.id AS schedule_id, s.day_of_week, s.start_time, p.id AS podcast_id, p.title, p.image,
-                               COALESCE(MAX(e.number) + 1, 1) AS episodio
-                        FROM schedule s
-                        JOIN podcasts p ON s.podcast_id = p.id
-                        LEFT JOIN seasons sn ON sn.podcast_id = p.id
-                        LEFT JOIN episodes e ON e.season_id = sn.id
-                        GROUP BY s.id
-                        ORDER BY FIELD(s.day_of_week, 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'), s.start_time;";
+        SELECT s.id AS schedule_id, s.day_of_week, s.start_time, p.id AS podcast_id, p.title, p.image,
+               COALESCE(MAX(e.number) + 1, 1) AS episodio
+        FROM schedule s
+        JOIN podcasts p ON s.podcast_id = p.id
+        LEFT JOIN seasons sn ON sn.podcast_id = p.id
+        LEFT JOIN episodes e ON e.season_id = sn.id
+        GROUP BY s.id
+        ORDER BY FIELD(s.day_of_week, 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'), s.start_time;";
 
                     $result = $conn->query($scheduleQuery);
                     $days = ['Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'];
@@ -725,7 +815,7 @@ $section = $_GET['section'] ?? $podcast;
                                                 <?php if (!empty($item['image'])): ?>
                                                     <img src="<?= htmlspecialchars($item['image']); ?>" class="img-thumb-preview" style="width: 50px; height: 50px;">
                                                 <?php else: ?>
-                                                    <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted">
+                                                    <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-text text-muted bg-light">
                                                         <i class="fas fa-podcast"></i>
                                                     </div>
                                                 <?php endif; ?>
