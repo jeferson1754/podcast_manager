@@ -323,19 +323,28 @@ $section = $_GET['section'] ?? $podcast;
             <!-- TABLA PODCASTS -->
             <?php if ($section == $podcast): ?>
                 <div class="table-responsive">
-                    <table class="table table-hover">
+                    <table class="table table-hover align-middle">
                         <thead>
                             <tr>
                                 <th style="width: 60px;">#</th>
                                 <th style="width: 80px;">Logo</th>
-                                <th>Nombre</th>
+                                <th>Nombre del Podcast</th>
+                                <th>Temporada</th>
+                                <th class="text-center">Episodios</th>
                                 <th>Estado</th>
                                 <th class="text-end">Acciones</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php
-                            $result = $conn->query("SELECT * FROM podcasts ORDER BY id");
+                            // Consulta mejorada con conteo de episodios y última temporada
+                            $sql = "SELECT p.*, 
+                           (SELECT COUNT(*) FROM episodes e WHERE e.podcast_id = p.id) as total_episodios,
+                           (SELECT title FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) as temporada_actual
+                    FROM podcasts p 
+                    ORDER BY p.id";
+
+                            $result = $conn->query($sql);
                             if ($result && $result->num_rows > 0):
                                 while ($podcasts = $result->fetch_assoc()):
                                     $stateClass = $podcasts['state'] === 'Activo' ? 'state-active' : ($podcasts['state'] === 'Inactivo' ? 'state-inactive' : 'state-finished');
@@ -344,9 +353,9 @@ $section = $_GET['section'] ?? $podcast;
                                         <td class="fw-semibold text-muted"><?= $podcasts['id']; ?></td>
                                         <td>
                                             <?php if (!empty($podcasts['image'])): ?>
-                                                <img src="<?= htmlspecialchars($podcasts['image']); ?>" alt="Logo" class="img-thumb-preview">
+                                                <img src="<?= htmlspecialchars($podcasts['image']); ?>" alt="Logo" class="img-thumb-preview rounded">
                                             <?php else: ?>
-                                                <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted">
+                                                <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
                                                     <i class="fas fa-image"></i>
                                                 </div>
                                             <?php endif; ?>
@@ -355,6 +364,17 @@ $section = $_GET['section'] ?? $podcast;
                                             <a href="<?= htmlspecialchars($podcasts['description']); ?>" target="_blank" class="fw-semibold text-dark text-decoration-none">
                                                 <?= htmlspecialchars($podcasts['title']); ?>
                                             </a>
+                                        </td>
+                                        <td>
+                                            <span class="badge bg-light text-dark border">
+                                                <i class="fas fa-layer-group me-1 text-muted"></i>
+                                                <?= htmlspecialchars($podcasts['temporada_actual'] ?? 'Sin Temporada'); ?>
+                                            </span>
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="badge bg-primary bg-opacity-10 text-primary px-2 py-1">
+                                                <i class="fas fa-headphones me-1"></i> <?= $podcasts['total_episodios']; ?>
+                                            </span>
                                         </td>
                                         <td>
                                             <form method="post" action="change_state.php" class="d-inline">
@@ -373,10 +393,10 @@ $section = $_GET['section'] ?? $podcast;
                                             </form>
                                         </td>
                                         <td class="text-end">
-                                            <a href="edit.php?type=<?= $podcast; ?>&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar">
+                                            <a href="edit.php?type=podcasts&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar">
                                                 <i class="fas fa-pen"></i>
                                             </a>
-                                            <a href="delete.php?type=<?= $podcast; ?>&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-danger" onclick="return confirm('¿Estás seguro de eliminar este podcast?')" title="Eliminar">
+                                            <a href="delete.php?type=podcast&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-danger" onclick="return confirm('¿Estás seguro de eliminar este podcast?')" title="Eliminar">
                                                 <i class="fas fa-trash"></i>
                                             </a>
                                         </td>
@@ -384,11 +404,11 @@ $section = $_GET['section'] ?? $podcast;
                                 <?php endwhile; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="5">
+                                    <td colspan="7" class="text-center py-4">
                                         <div class="empty-state">
-                                            <i class="fas fa-podcast"></i>
+                                            <i class="fas fa-podcast fa-2x mb-2 text-muted"></i>
                                             <h5>Sin Podcasts aún</h5>
-                                            <p class="small">Haz clic en "Nuevo Podcast" para registrar tu primer contenido.</p>
+                                            <p class="small text-muted">Haz clic en "Nuevo Podcast" para registrar tu primer contenido.</p>
                                         </div>
                                     </td>
                                 </tr>
@@ -400,30 +420,58 @@ $section = $_GET['section'] ?? $podcast;
                 <!-- TABLA TEMPORADAS -->
             <?php elseif ($section == $temporadas): ?>
                 <div class="table-responsive">
-                    <table class="table table-hover">
+                    <table class="table table-hover align-middle">
                         <thead>
                             <tr>
                                 <th style="width: 60px;">#</th>
+                                <th style="width: 80px;">Logo</th>
                                 <th>Podcast</th>
                                 <th>Temporada</th>
+                                <th class="text-center">Episodios</th>
                                 <th class="text-end">Acciones</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php
-                            $result = $conn->query("SELECT s.*, p.title as podcast_title FROM seasons s JOIN podcasts p ON s.podcast_id = p.id ORDER BY p.title, s.number");
+                            // Consulta mejorada trayendo la imagen del podcast y el conteo de episodios por temporada
+                            $sql = "SELECT s.*, p.title as podcast_title, p.image as podcast_image,
+                           (SELECT COUNT(*) FROM episodes e WHERE e.season_id = s.id) as total_episodios
+                    FROM seasons s 
+                    JOIN podcasts p ON s.podcast_id = p.id 
+                    ORDER BY p.title, s.number";
+
+                            $result = $conn->query($sql);
                             if ($result && $result->num_rows > 0):
                                 while ($season = $result->fetch_assoc()):
                             ?>
                                     <tr>
                                         <td class="fw-semibold text-muted"><?= $season['id']; ?></td>
-                                        <td class="fw-semibold"><?= htmlspecialchars($season['podcast_title']); ?></td>
-                                        <td><span class="badge bg-light text-dark border">Temporada <?= $season['number']; ?></span></td>
+                                        <td>
+                                            <?php if (!empty($season['podcast_image'])): ?>
+                                                <img src="<?= htmlspecialchars($season['podcast_image']); ?>" alt="Logo" class="img-thumb-preview rounded">
+                                            <?php else: ?>
+                                                <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
+                                                    <i class="fas fa-image"></i>
+                                                </div>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="fw-semibold text-dark"><?= htmlspecialchars($season['podcast_title']); ?></td>
+                                        <td>
+                                            <span class="badge bg-light text-dark border px-2 py-1">
+                                                <i class="fas fa-layer-group me-1 text-muted"></i>
+                                                <?= htmlspecialchars($season['title'] ?: 'Temporada ' . $season['number']); ?>
+                                            </span>
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="badge bg-primary bg-opacity-10 text-primary px-2 py-1">
+                                                <i class="fas fa-headphones me-1"></i> <?= $season['total_episodios']; ?>
+                                            </span>
+                                        </td>
                                         <td class="text-end">
-                                            <a href="edit.php?type=<?= $temporadas; ?>&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-primary me-1">
+                                            <a href="edit.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar">
                                                 <i class="fas fa-pen"></i>
                                             </a>
-                                            <a href="delete.php?type=<?= $temporadas; ?>&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-danger" onclick="return confirm('¿Estás seguro?')">
+                                            <a href="delete.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-danger" onclick="return confirm('¿Estás seguro de eliminar esta temporada?')" title="Eliminar">
                                                 <i class="fas fa-trash"></i>
                                             </a>
                                         </td>
@@ -431,11 +479,11 @@ $section = $_GET['section'] ?? $podcast;
                                 <?php endwhile; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="4">
+                                    <td colspan="6" class="text-center py-4">
                                         <div class="empty-state">
-                                            <i class="fas fa-layer-group"></i>
+                                            <i class="fas fa-layer-group fa-2x mb-2 text-muted"></i>
                                             <h5>Sin Temporadas registradas</h5>
-                                            <p class="small">Agrega temporadas para organizar tus episodios.</p>
+                                            <p class="small text-muted">Agrega temporadas para organizar tus episodios.</p>
                                         </div>
                                     </td>
                                 </tr>
@@ -514,7 +562,18 @@ $section = $_GET['section'] ?? $podcast;
                                         <div class="episode-meta">
                                             <span><i class="far fa-calendar-alt me-1"></i><?= date('d/m/Y H:i', strtotime($episode['publish_date'])); ?></span>
                                             <span>•</span>
-                                            <span><i class="far fa-clock me-1"></i><?= htmlspecialchars($episode['duration']); ?></span>
+                                            <?php
+                                            $fechaEpisodio = date('Y-m-d', strtotime($episode['publish_date']));
+                                            $hoy = date('Y-m-d');
+                                            // Condición: Si es de hoy y la duración es 00:00:00 (o si prefieres usar directamente el status)
+                                            if ($fechaEpisodio === $hoy && $episode['duration'] === '00:00:00'):
+                                            ?>
+                                                <span class="badge bg-danger text-white px-2 py-1">
+                                                    <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> En vivo
+                                                </span>
+                                            <?php else: ?>
+                                                <span><i class="far fa-clock me-1"></i><?= htmlspecialchars($episode['duration']); ?></span>
+                                            <?php endif; ?>
                                         </div>
 
                                         <div class="episode-podcast-info">
@@ -577,7 +636,19 @@ $section = $_GET['section'] ?? $podcast;
                                         </td>
                                         <td><span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill">Cap. <?= $episode['number']; ?></span></td>
                                         <td class="small text-muted"><?= date('d/m/Y H:i', strtotime($episode['publish_date'])); ?></td>
-                                        <td class="small text-muted"><?= htmlspecialchars($episode['duration']); ?></td>
+                                        <td class="small text-muted">
+                                            <?php
+                                            $fechaEpisodio = date('Y-m-d', strtotime($episode['publish_date']));
+                                            $hoy = date('Y-m-d');
+                                            if ($fechaEpisodio === $hoy && $episode['duration'] === '00:00:00'):
+                                            ?>
+                                                <span class="badge bg-danger text-white px-2 py-1">
+                                                    <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> En vivo
+                                                </span>
+                                            <?php else: ?>
+                                                <?= htmlspecialchars($episode['duration']); ?>
+                                            <?php endif; ?>
+                                        </td>
                                         <td class="text-end">
                                             <a href="edit.php?type=<?= $episodios; ?>&id=<?= $episode['id']; ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar">
                                                 <i class="fas fa-pen"></i>
