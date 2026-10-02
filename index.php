@@ -393,11 +393,11 @@ $section = $_GET['section'] ?? $podcast;
                                             </form>
                                         </td>
                                         <td class="text-end">
-                                            <a href="edit.php?type=podcasts&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar">
-                                                <i class="fas fa-pen"></i>
+                                            <a href="edit.php?type=podcasts&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-primary me-1 border" title="Editar">
+                                                <i class="fas fa-pen"></i> Editar
                                             </a>
-                                            <a href="delete.php?type=podcast&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-danger" onclick="return confirm('¿Estás seguro de eliminar este podcast?')" title="Eliminar">
-                                                <i class="fas fa-trash"></i>
+                                            <a href="delete.php?type=podcasts&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-danger border" onclick="return confirm('¿Estás seguro de eliminar este podcast?')" title="Eliminar">
+                                                <i class="fas fa-trash"></i> Eliminar
                                             </a>
                                         </td>
                                     </tr>
@@ -468,11 +468,11 @@ $section = $_GET['section'] ?? $podcast;
                                             </span>
                                         </td>
                                         <td class="text-end">
-                                            <a href="edit.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar">
-                                                <i class="fas fa-pen"></i>
+                                            <a href="edit.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-primary me-1 border" title="Editar">
+                                                <i class="fas fa-pen"></i> Editar
                                             </a>
-                                            <a href="delete.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-danger" onclick="return confirm('¿Estás seguro de eliminar esta temporada?')" title="Eliminar">
-                                                <i class="fas fa-trash"></i>
+                                            <a href="delete.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-danger border" onclick="return confirm('¿Estás seguro de eliminar esta temporada?')" title="Eliminar">
+                                                <i class="fas fa-trash"></i> Eliminar
                                             </a>
                                         </td>
                                     </tr>
