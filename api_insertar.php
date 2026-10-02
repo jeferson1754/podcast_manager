@@ -60,17 +60,13 @@ if ($action === 'obtener_o_crear_podcast') {
 }
 
 // ACCIÓN C: Obtener todos los episodios del podcast (para la sincronización de la playlist)
-if ($action === 'obtener_episodios_podcast') {
-    $podcastId = $inputData['podcast_id'] ?? $_POST['podcast_id'] ?? 0;
-
-    $stmt = $pdo->prepare("SELECT youtube_id, title, status FROM episodes WHERE podcast_id = ?");
-    $stmt->execute([$podcastId]);
+if ($action === 'obtener_todos_episodios') {
+    $stmt = $pdo->query("SELECT youtube_id, status, duration, title FROM episodes");
     $episodios = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    echo json_encode(['status' => 'ok', 'episodios' => $episodios]);
+    echo json_encode(['status' => 'success', 'episodios' => $episodios]);
     exit;
 }
-
 // ACCIÓN D: Actualizar el estado del episodio (PENDING o PUBLISHED) y registrar fecha de completado
 if ($action === 'actualizar_estado') {
     $ytId        = $inputData['youtube_id'] ?? $_POST['youtube_id'] ?? '';
@@ -104,20 +100,45 @@ if ($action === 'actualizar_estado') {
     echo json_encode(['status' => 'updated', 'message' => 'Estado y fecha actualizados exitosamente']);
     exit;
 }
-
-// ACCIÓN B: Insertar o Actualizar Episodio
+// ACCIÓN B: Insertar o Actualizar Episodio con autodetección de Podcast
 if ($action === 'guardar_episodio') {
-    $ytId        = $inputData['youtube_id'] ?? $_POST['youtube_id'] ?? '';
-    $podcastId   = $inputData['podcast_id'] ?? $_POST['podcast_id'] ?? 0;
-    $titulo      = $inputData['title'] ?? $_POST['title'] ?? '';
-    $duracion    = $inputData['duration'] ?? $_POST['duration'] ?? '00:00:00';
-    $status      = $inputData['status'] ?? $_POST['status'] ?? 'PUBLISHED';
-    $publishDate = $inputData['publish_date'] ?? $_POST['publish_date'] ?? date('Y-m-d H:i:s');
+    $ytId         = $inputData['youtube_id'] ?? $_POST['youtube_id'] ?? '';
+    $titulo       = $inputData['title'] ?? $_POST['title'] ?? '';
+    $duracion     = $inputData['duration'] ?? $_POST['duration'] ?? '00:00:00';
+    $status       = $inputData['status'] ?? $_POST['status'] ?? 'PUBLISHED';
+    $publishDate  = $inputData['publish_date'] ?? $_POST['publish_date'] ?? date('Y-m-d H:i:s');
+    $channelId    = $inputData['channel_id'] ?? $_POST['channel_id'] ?? '';
+    $channelName  = $inputData['channel_name'] ?? $_POST['channel_name'] ?? 'Canal Desconocido';
+
+    $podcastId = null;
+
+    // 1. Intentar buscar el podcast en la base de datos usando el channel_id de YouTube
+    if (!empty($channelId)) {
+        // Buscamos coincidencia del channel_id dentro de la URL del canal guardada en la BD
+        $stmtPod = $pdo->prepare("SELECT id FROM podcasts WHERE description LIKE ? LIMIT 1");
+        $stmtPod->execute(['%' . $channelId . '%']);
+        $podcast = $stmtPod->fetch();
+
+        if ($podcast) {
+            $podcastId = $podcast['id'];
+        }
+    }
+
+    // Fallback: Si no lo encontró por channel_id pero mandaron un podcast_id explícito
+    if (!$podcastId) {
+        $podcastId = $inputData['podcast_id'] ?? $_POST['podcast_id'] ?? null;
+    }
+
+    // Si aún así no tenemos un podcast válido, evitamos romper la base de datos
+    if (!$podcastId) {
+        echo json_encode(['status' => 'error', 'message' => 'No se pudo asociar el video a ningun podcast existente']);
+        exit;
+    }
 
     // Definir si se debe registrar completed_at basado en el estado
     $completedAtValue = ($status === 'PUBLISHED') ? date('Y-m-d H:i:s') : null;
 
-    // 1. Verificar si el episodio ya existe
+    // 2. Verificar si el episodio ya existe
     $stmtCheck = $pdo->prepare("SELECT id, status FROM episodes WHERE youtube_id = ?");
     $stmtCheck->execute([$ytId]);
     $existente = $stmtCheck->fetch();
@@ -127,7 +148,7 @@ if ($action === 'guardar_episodio') {
         if ($existente['status'] === 'LIVE' && $status === 'PUBLISHED') {
             $stmtUpdate = $pdo->prepare("UPDATE episodes SET duration = ?, status = 'PUBLISHED', completed_at = NOW(), title = ? WHERE id = ?");
             $stmtUpdate->execute([$duracion, $titulo, $existente['id']]);
-            echo json_encode(['status' => 'updated', 'message' => 'Directo finalizado, completado y actualizado']);
+            echo json_encode(['status' => 'updated', 'message' => 'Directo finalizado y actualizado']);
         } else {
             // Actualizar el estado y sincronizar completed_at si pasa a PUBLISHED
             if ($status === 'PUBLISHED') {
@@ -142,19 +163,19 @@ if ($action === 'guardar_episodio') {
         exit;
     }
 
-    // 2. Obtener la última temporada del podcast
+    // 3. Obtener la última temporada del podcast
     $stmtSeason = $pdo->prepare("SELECT id FROM seasons WHERE podcast_id = ? ORDER BY number DESC LIMIT 1");
     $stmtSeason->execute([$podcastId]);
     $season = $stmtSeason->fetch();
     $seasonId = $season['id'] ?? 1;
 
-    // 3. Obtener el siguiente número de episodio
+    // 4. Obtener el siguiente número de episodio
     $stmtNum = $pdo->prepare("SELECT MAX(number) as max_num FROM episodes WHERE season_id = ?");
     $stmtNum->execute([$seasonId]);
     $rowNum = $stmtNum->fetch();
     $numEpisodio = ($rowNum['max_num'] ?? 0) + 1;
 
-    // 4. Insertar nuevo episodio incluyendo completed_at si nace como PUBLISHED
+    // 5. Insertar nuevo episodio asociado a su podcast correcto
     $stmtInsert = $pdo->prepare("
         INSERT INTO episodes (youtube_id, podcast_id, season_id, number, title, duration, status, publish_date, completed_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

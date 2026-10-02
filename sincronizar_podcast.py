@@ -1,3 +1,5 @@
+import yt_dlp
+from zoneinfo import ZoneInfo
 import time
 import csv
 import json
@@ -125,14 +127,15 @@ def enviar_a_php_con_session(driver, php_endpoint, payload):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
 def obtener_videos_playlist(url_playlist):
-    """Extrae de forma rápida los IDs, títulos, duración y el canal de origen usando yt-dlp."""
+    """Extrae de forma rápida los IDs, títulos, duración, canal y fecha real convertida a Santiago usando yt-dlp."""
     ydl_opts = {
         'extract_flat': True,
         'skip_download': True,
         'quiet': True
     }
-    
+
     videos = []
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
@@ -143,11 +146,33 @@ def obtener_videos_playlist(url_playlist):
                         vid_id = entry.get('id')
                         if vid_id:
                             vid_title = entry.get('title') or 'Sin título'
-                            
-                            # Capturamos el identificador del canal del video en la playlist
-                            channel_id = entry.get('channel_id') or entry.get('uploader_id') or ''
-                            channel_name = entry.get('channel') or entry.get('uploader') or 'Desconocido'
-                            
+                            channel_id = entry.get('channel_id') or entry.get(
+                                'uploader_id') or ''
+                            channel_name = entry.get('channel') or entry.get(
+                                'uploader') or 'Desconocido'
+
+                            # Procesamiento y conversión de fecha a America/Santiago
+                            publish_date = None
+                            raw_date = entry.get(
+                                'upload_date') or entry.get('release_date')
+
+                            # Formato YYYYMMDD que suele dar yt-dlp flat
+                            if raw_date and len(raw_date) == 8:
+                                try:
+                                    # Lo interpretamos como UTC al inicio del día o medianoche
+                                    utc_dt = datetime.strptime(
+                                        raw_date, "%Y%m%d").replace(tzinfo=ZoneInfo("UTC"))
+                                    chile_dt = utc_dt.astimezone(
+                                        ZoneInfo("America/Santiago"))
+                                    publish_date = chile_dt.strftime(
+                                        "%Y-%m-%d %H:%M:%S")
+                                except Exception:
+                                    pass
+
+                            # Si no se pudo parsear con el formato anterior, usamos la actual como respaldo
+                            if not publish_date:
+                                publish_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                             # Duración
                             duracion_segundos = entry.get('duration')
                             if duracion_segundos and isinstance(duracion_segundos, (int, float)) and duracion_segundos > 0:
@@ -157,71 +182,78 @@ def obtener_videos_playlist(url_playlist):
                                 duracion_str = f"{horas:02d}:{minutos:02d}:{segundos:02d}"
                             else:
                                 duracion_str = "00:00:00"
-                            
+
                             videos.append({
                                 "youtube_id": str(vid_id).strip(),
                                 "title": str(vid_title).strip(),
                                 "duration": duracion_str,
                                 "channel_id": str(channel_id).strip(),
-                                "channel_name": str(channel_name).strip()
+                                "channel_name": str(channel_name).strip(),
+                                "publish_date": publish_date
                             })
         except Exception as e:
             print(f"Error al extraer la playlist general: {e}")
-            
+
     return videos
 
 
-def sincronizar_playlist_pendientes(driver, php_endpoint, podcast_id, playlist_ids):
-    """Sincroniza la playlist global ya extraída con la BD del podcast actual:
-
-    - Si está en la playlist general: se asegura de crearlo o dejarlo como PENDING.
-    - Si estaba en la BD pero ya NO está en la playlist general: lo marca como PUBLISHED.
+def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
+    """Sincroniza la playlist global de pendientes de forma totalmente independiente,
+    autodectando el canal y podcast de cada video.
     """
-    print(f"\n📋 Sincronizando playlist de pendientes...")
+    print(f"\n📋 Sincronizando playlist global de pendientes...")
 
     # 🛡️ VALIDACIÓN DE SEGURIDAD CRÍTICA
     if len(playlist_ids) == 0:
-        print("⚠️ ADVERTENCIA: La playlist está vacía. Omitiendo limpieza para evitar falsos positivos.")
-        return  # Sale de la función de forma segura sin alterar la base de datos
+        print("⚠️ ADVERTENCIA: La playlist global está vacía. Omitiendo para evitar falsos positivos.")
+        return
 
-    # 2. Consultar a la BD qué episodios existen actualmente para este podcast
+    # 1. Obtener TODOS los episodios existentes en la BD (o consultar a PHP un listado global)
+    # Nota: Asegúrate de tener una acción en PHP llamada 'obtener_todos_episodios'
+    # o ajusta esta consulta para que traiga un mapa global de youtube_id -> estado
     res_db = enviar_a_php_con_session(driver, php_endpoint, {
         'token': TOKEN_SECRET,
-        'action': 'obtener_episodios_podcast',
-        'podcast_id': podcast_id
+        'action': 'obtener_todos_episodios'
     })
 
     episodios_db = res_db.get(
         'episodios', []) if isinstance(res_db, dict) else []
 
-    # 🛡️ Blindaje: Aseguramos que solo procese registros con un youtube_id válido
+    # 🛡️ Blindaje: Mapa global de todos los episodios registrados en el sistema
     db_map = {
         str(ep['youtube_id']).strip(): ep
         for ep in episodios_db
         if ep and ep.get('youtube_id') is not None
     }
 
-    # 3. Caso A & B: Si están en YouTube (crear o mantener PENDING)
+    # 2. Procesar cada video de la playlist global
     for yt_id, v_info in playlist_ids.items():
         if yt_id not in db_map:
             print(
-                f"  🆕 Nuevo en playlist (Creando PENDING): {v_info['title']}")
+                f"  🆕 Nuevo en playlist global (Autodetectando canal): {v_info['title']}")
+
+            publish_date = v_info.get(
+                'publish_date') or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Enviamos a PHP. PHP se encarga de buscar el podcast_id usando el channel_id
             enviar_a_php_con_session(driver, php_endpoint, {
                 'token': TOKEN_SECRET,
                 'action': 'guardar_episodio',
                 'youtube_id': yt_id,
-                'podcast_id': podcast_id,
+                'channel_id': v_info.get('channel_id', ''),
+                'channel_name': v_info.get('channel_name', ''),
                 'title': v_info['title'],
-                'duration': v_info['duration'],  # <--- Aquí toma "00:00:00" si es en vivo o la duración real si la tiene
+                'duration': v_info['duration'],
                 'status': 'PENDING',
-                'publish_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                'publish_date': publish_date
             })
         else:
-            # Opcional: Si ya existe pero su duración estaba en ceros y ahora YouTube ya la conoce, la actualizamos
             duracion_actual_db = db_map[yt_id].get('duration', '00:00:00')
-            # Si ya estaba pero estaba completado y volvió a la playlist, lo pasamos a pendiente
+
+            # Si ya estaba pero se había completado y volvió a entrar a la playlist
             if db_map[yt_id].get('status') == 'PUBLISHED':
-                print(f"  🔄 Reactivando a PENDING (volvió a la playlist): {v_info['title']}")
+                print(
+                    f"  🔄 Reactivando a PENDING (volvió a la playlist): {v_info['title']}")
                 enviar_a_php_con_session(driver, php_endpoint, {
                     'token': TOKEN_SECRET,
                     'action': 'actualizar_estado',
@@ -229,21 +261,20 @@ def sincronizar_playlist_pendientes(driver, php_endpoint, podcast_id, playlist_i
                     'status': 'PENDING'
                 })
             elif duracion_actual_db == "00:00:00" and v_info['duration'] != "00:00:00":
-                # Si antes estaba en ceros (ej. era directo) y ahora ya tiene duración, la actualizamos en PHP
-                print(f"  ⏱️ Actualizando duración para: {v_info['title']} ({v_info['duration']})")
+                print(
+                    f"  ⏱️ Actualizando duración para: {v_info['title']} ({v_info['duration']})")
                 enviar_a_php_con_session(driver, php_endpoint, {
                     'token': TOKEN_SECRET,
-                    'action': 'actualizar_duracion', # Asegúrate de tener esta acción en tu PHP si deseas actualizarla al vuelo
+                    'action': 'actualizar_duracion',
                     'youtube_id': yt_id,
                     'duration': v_info['duration']
                 })
 
-    # 4. Caso C: Está en la BD pero YA NO está en YouTube -> Marcar como PUBLISHED
+    # 3. Marcar como PUBLISHED los que ya salieron de la playlist global
     for yt_id, ep_info in db_map.items():
-        # Quitamos la restricción estricta de != 'PUBLISHED' si quieres asegurar que refresque la fecha,
-        # o nos aseguramos de que compare contra el estado actual de la BD
         if yt_id not in playlist_ids and ep_info.get('status') != 'PUBLISHED':
-            print(f"  ✅ Quitado de YouTube (Marcando como PUBLISHED): {ep_info.get('title', yt_id)}")
+            print(
+                f"  ✅ Quitado de YouTube/Playlist (Marcando como PUBLISHED): {ep_info.get('title', yt_id)}")
             enviar_a_php_con_session(driver, php_endpoint, {
                 'token': TOKEN_SECRET,
                 'action': 'actualizar_estado',
@@ -275,11 +306,10 @@ def procesar():
         driver.get(PHP_ENDPOINT)
         time.sleep(3)
 
-
         # =========================================================================
         # 1. BARRIDO DE CANALES (Registrar o actualizar datos de cada canal/podcast)
         # =========================================================================
-        
+
         for row in reader:
             if len(row) < 6:
                 continue
@@ -321,7 +351,7 @@ def procesar():
             if not podcast_id:
                 print(f"  ❌ Error en PHP al registrar el podcast: {res_php}")
                 continue
-            
+
             # Sincronización general de subidas del canal de YouTube
             yt_playlist_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId={uploads_id}&maxResults=50&key={API_KEY}"
             raw_playlist = obtener_json_con_selenium(driver, yt_playlist_url)
@@ -374,24 +404,26 @@ def procesar():
 
                 print(
                     f"  -> Video canal {yt_id}: {resp_insert.get('status')} ({resp_insert.get('message', '')})")
-                
-                            # 3. Sincronización inteligente utilizando la playlist global ya extraída
+
+                # 3. Sincronización inteligente utilizando la playlist global ya extraída
         # =========================================================================
         # 2. SINCRONIZACIÓN DE LA PLAYLIST GENERAL (Se hace UNA SOLA VEZ al final)
         # =========================================================================
         if PLAYLIST_URL:
             print(f"\n📋 Sincronizando playlist general de pendientes...")
             videos_yt = obtener_videos_playlist(PLAYLIST_URL)
-            playlist_ids_general = {v["youtube_id"].strip(): v for v in videos_yt}
+            playlist_ids_general = {
+                v["youtube_id"].strip(): v for v in videos_yt}
 
             if len(playlist_ids_general) == 0:
-                print("⚠️ ADVERTENCIA: La playlist general devolvió 0 videos. Omitiendo sincronización.")
+                print(
+                    "⚠️ ADVERTENCIA: La playlist general devolvió 0 videos. Omitiendo sincronización.")
             else:
-                print(f"  ✅ Se encontraron {len(playlist_ids_general)} videos en la playlist general.")
-                sincronizar_playlist_pendientes(
-                    driver, PHP_ENDPOINT, podcast_id, playlist_ids_general
+                print(
+                    f"  ✅ Se encontraron {len(playlist_ids_general)} videos en la playlist general.")
+                sincronizar_playlist_global(
+                    driver, PHP_ENDPOINT, playlist_ids_general
                 )
-
 
     finally:
         print("\n🔒 Cerrando navegador Selenium...")
