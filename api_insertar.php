@@ -110,15 +110,14 @@ if ($action === 'guardar_episodio') {
     $channelId    = $inputData['channel_id'] ?? $_POST['channel_id'] ?? '';
     $channelName  = $inputData['channel_name'] ?? $_POST['channel_name'] ?? 'Canal Desconocido';
 
-    $podcastId = null;
+$podcastId = null;
 
     // 1. Intentar buscar el podcast en la base de datos usando el channel_id de YouTube
     if (!empty($channelId)) {
-        // Buscamos coincidencia del channel_id dentro de la URL del canal guardada en la BD
         $stmtPod = $pdo->prepare("SELECT id FROM podcasts WHERE description LIKE ? LIMIT 1");
         $stmtPod->execute(['%' . $channelId . '%']);
         $podcast = $stmtPod->fetch();
-
+        
         if ($podcast) {
             $podcastId = $podcast['id'];
         }
@@ -129,9 +128,27 @@ if ($action === 'guardar_episodio') {
         $podcastId = $inputData['podcast_id'] ?? $_POST['podcast_id'] ?? null;
     }
 
-    // Si aún así no tenemos un podcast válido, evitamos romper la base de datos
+    // 🚀 NUEVO: Si aún no existe el podcast pero tenemos el nombre y el ID del canal, ¡lo creamos al vuelo!
+    if (!$podcastId && !empty($channelId)) {
+        $nombreCanal = $inputData['channel_name'] ?? 'Podcast Nuevo de YouTube';
+        $urlCanalPorDefecto = "https://www.youtube.com/channel/" . $channelId;
+        
+        $stmtInsertPod = $pdo->prepare("INSERT INTO podcasts (title, description) VALUES (?, ?)");
+        $stmtInsertPod->execute([$nombreCanal, $urlCanalPorDefecto]);
+        
+        // Recuperamos el ID recién creado
+        $podcastId = $pdo->lastInsertId();
+        
+        $stmtSeason = $pdo->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, 1, 'Temporada 1')");
+        $stmtSeason->execute([$podcastId]);
+
+        // Opcional: imprimir o registrar en el log que se creó un podcast nuevo
+        // (Esto lo devolverá en el JSON de respuesta)
+    }
+
+    // Si de plano no hay canal ni ID y no se pudo crear
     if (!$podcastId) {
-        echo json_encode(['status' => 'error', 'message' => 'No se pudo asociar el video a ningun podcast existente']);
+        echo json_encode(['status' => 'error', 'message' => 'No se pudo asociar ni crear el podcast para este video']);
         exit;
     }
 
