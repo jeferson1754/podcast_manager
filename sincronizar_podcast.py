@@ -26,10 +26,10 @@ load_dotenv()
 CSV_URL = os.getenv("CSV_URL")
 API_KEY = os.getenv("API_KEY")
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR")
+PHP_ENDPOINT = os.getenv("PHP_ENDPOINT")
 
 # URL de tu script PHP subido a InfinityFree
-PHP_ENDPOINT = "http://localhost/Podcast_Manager/api_insertar.php"
-# PHP_ENDPOINT = "https://inventarioncc.infinityfreeapp.com/Podcast%20Manager/api_insertar.php"
+
 TOKEN_SECRET = "MI_CLAVE_SUPER_SECRETA_123"
 
 # Coloca aquí la URL de tu playlist de YouTube o la fuente de pendientes
