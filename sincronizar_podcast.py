@@ -17,6 +17,7 @@ from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
 import os
+import logging
 from dotenv import load_dotenv
 
 # Cargar las variables
@@ -27,6 +28,35 @@ CSV_URL = os.getenv("CSV_URL")
 API_KEY = os.getenv("API_KEY")
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR")
 PHP_ENDPOINT = os.getenv("PHP_ENDPOINT")
+HISTORIAL_FILE = os.getenv("HISTORIAL_FILE", "historial_ejecuciones.txt")
+
+# ------------------------------------------------------------------
+# LOGGING (consola + archivo .txt)
+# ------------------------------------------------------------------
+
+logger = logging.getLogger("sincronizar_podcast")
+
+
+def configurar_logging():
+    """Configura el logger para escribir en consola y en HISTORIAL_FILE (modo append)."""
+    if logger.handlers:  # evita duplicar handlers si se llama más de una vez
+        return
+
+    logger.setLevel(logging.INFO)
+    formato = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
+
+    handler_archivo = logging.FileHandler(
+        HISTORIAL_FILE, mode="a", encoding="utf-8")
+    handler_archivo.setFormatter(formato)
+    logger.addHandler(handler_archivo)
+
+    handler_consola = logging.StreamHandler()
+    handler_consola.setFormatter(formato)
+    logger.addHandler(handler_consola)
+
+
+configurar_logging()
 
 # URL de tu script PHP subido a InfinityFree
 
@@ -38,6 +68,26 @@ PLAYLIST_URL = "https://www.youtube.com/playlist?list=PL4wOdIekMghnJXO-_gOclIXii
 # ------------------------------------------------------------------
 # FUNCIONES AUXILIARES
 # ------------------------------------------------------------------
+
+
+def guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje=""):
+    """Registra en el log (.txt) un resumen de la ejecución."""
+    duracion = int((fin - inicio).total_seconds())
+    nivel = logging.INFO if estado == "OK" else logging.ERROR
+    logger.log(
+        nivel,
+        "RESUMEN | estado=%s | inicio=%s | fin=%s | duracion=%ss | "
+        "podcasts=%s | episodios=%s | errores=%s%s",
+        estado,
+        inicio.strftime("%Y-%m-%d %H:%M:%S"),
+        fin.strftime("%Y-%m-%d %H:%M:%S"),
+        duracion,
+        stats.get("podcasts", 0),
+        stats.get("episodios", 0),
+        stats.get("errores", 0),
+        f" | mensaje={mensaje}" if mensaje else "",
+    )
+    logger.info("=" * 70)
 
 
 def duracion_a_segundos(iso_duration):
@@ -120,8 +170,8 @@ def enviar_a_php_con_session(driver, php_endpoint, payload):
     try:
         res_json = driver.execute_async_script(script, payload)
         if isinstance(res_json, dict) and res_json.get("message") == "HTML_RETURNED":
-            print(
-                f"\n⚠️️ [RESPUESTA RAW DE INFINITYFREE]:\n{res_json.get('raw')[:400]}\n")
+            logger.warning(
+                f"⚠️️ [RESPUESTA RAW DE INFINITYFREE]:\n{res_json.get('raw')[:400]}\n")
             return {"status": "error", "message": "Servidor devolvió HTML/Error de PHP"}
         return res_json
     except Exception as e:
@@ -192,7 +242,7 @@ def obtener_videos_playlist(url_playlist):
                                 "publish_date": publish_date
                             })
         except Exception as e:
-            print(f"Error al extraer la playlist general: {e}")
+            logger.error(f"Error al extraer la playlist general: {e}")
 
     return videos
 
@@ -201,11 +251,11 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
     """Sincroniza la playlist global de pendientes de forma totalmente independiente,
     autodectando el canal y podcast de cada video.
     """
-    print(f"\n📋 Sincronizando playlist global de pendientes...")
+    logger.info(f"📋 Sincronizando playlist global de pendientes...")
 
     # 🛡️ VALIDACIÓN DE SEGURIDAD CRÍTICA
     if len(playlist_ids) == 0:
-        print("⚠️ ADVERTENCIA: La playlist global está vacía. Omitiendo para evitar falsos positivos.")
+        logger.warning("⚠️ ADVERTENCIA: La playlist global está vacía. Omitiendo para evitar falsos positivos.")
         return
 
     # 1. Obtener TODOS los episodios existentes en la BD (o consultar a PHP un listado global)
@@ -229,7 +279,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
     # 2. Procesar cada video de la playlist global
     for yt_id, v_info in playlist_ids.items():
         if yt_id not in db_map:
-            print(
+            logger.info(
                 f"  🆕 Nuevo en playlist global (Autodetectando canal): {v_info['title']}")
 
             publish_date = v_info.get(
@@ -252,7 +302,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
 
             # Si ya estaba pero se había completado y volvió a entrar a la playlist
             if db_map[yt_id].get('status') == 'PUBLISHED':
-                print(
+                logger.info(
                     f"  🔄 Reactivando a PENDING (volvió a la playlist): {v_info['title']}")
                 enviar_a_php_con_session(driver, php_endpoint, {
                     'token': TOKEN_SECRET,
@@ -261,7 +311,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
                     'status': 'PENDING'
                 })
             elif duracion_actual_db == "00:00:00" and v_info['duration'] != "00:00:00":
-                print(
+                logger.info(
                     f"  ⏱️ Actualizando duración para: {v_info['title']} ({v_info['duration']})")
                 enviar_a_php_con_session(driver, php_endpoint, {
                     'token': TOKEN_SECRET,
@@ -273,7 +323,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
     # 3. Marcar como PUBLISHED los que ya salieron de la playlist global
     for yt_id, ep_info in db_map.items():
         if yt_id not in playlist_ids and ep_info.get('status') != 'PUBLISHED':
-            print(
+            logger.info(
                 f"  ✅ Quitado de YouTube/Playlist (Marcando como PUBLISHED): {ep_info.get('title', yt_id)}")
             enviar_a_php_con_session(driver, php_endpoint, {
                 'token': TOKEN_SECRET,
@@ -288,21 +338,28 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
 
 
 def procesar():
-    print("🌐 Iniciando navegador Selenium...")
+    inicio = datetime.now(ZoneInfo("America/Santiago"))
+    stats = {"podcasts": 0, "episodios": 0, "errores": 0}
+    estado = "OK"
+    mensaje = ""
+
+    logger.info("=" * 70)
+    logger.info("INICIO DE EJECUCIÓN")
+    logger.info("🌐 Iniciando navegador Selenium...")
     driver = configurar_navegador(DOWNLOAD_DIR)
 
     try:
         driver.get("https://www.google.com")
         time.sleep(3)
 
-        print("📄 Descargando configuración desde Google Sheets CSV...")
+        logger.info("📄 Descargando configuración desde Google Sheets CSV...")
         raw_csv = obtener_json_con_selenium(driver, CSV_URL)
 
         lines = raw_csv.splitlines()
         reader = csv.reader(lines)
         header = next(reader, None)
 
-        print("🔑 Pasando validación de seguridad de InfinityFree...")
+        logger.info("🔑 Pasando validación de seguridad de InfinityFree...")
         driver.get(PHP_ENDPOINT)
         time.sleep(3)
 
@@ -323,14 +380,14 @@ def procesar():
             if 'podcast' not in tipo or not channel_id:
                 continue
 
-            print(f"\n🔍 Procesando podcast: {nombre_canal} ({channel_id})...")
+            logger.info(f"🔍 Procesando podcast: {nombre_canal} ({channel_id})...")
 
             yt_channel_url = f"https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails&id={channel_id}&key={API_KEY}"
             raw_chan = obtener_json_con_selenium(driver, yt_channel_url)
             res_chan = json.loads(raw_chan)
 
             if not res_chan.get('items'):
-                print("  ⚠️ No se encontró el canal.")
+                logger.warning("  ⚠️ No se encontró el canal.")
                 continue
 
             snippet = res_chan['items'][0]['snippet']
@@ -349,8 +406,11 @@ def procesar():
 
             podcast_id = res_php.get('podcast_id')
             if not podcast_id:
-                print(f"  ❌ Error en PHP al registrar el podcast: {res_php}")
+                logger.error(f"  ❌ Error en PHP al registrar el podcast: {res_php}")
+                stats["errores"] += 1
                 continue
+
+            stats["podcasts"] += 1
 
             # Sincronización general de subidas del canal de YouTube
             yt_playlist_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId={uploads_id}&maxResults=50&key={API_KEY}"
@@ -402,32 +462,43 @@ def procesar():
                     'publish_date': publish_date
                 })
 
-                print(
+                logger.info(
                     f"  -> Video canal {yt_id}: {resp_insert.get('status')} ({resp_insert.get('message', '')})")
+                stats["episodios"] += 1
+                if resp_insert.get("status") == "error":
+                    stats["errores"] += 1
 
                 # 3. Sincronización inteligente utilizando la playlist global ya extraída
         # =========================================================================
         # 2. SINCRONIZACIÓN DE LA PLAYLIST GENERAL (Se hace UNA SOLA VEZ al final)
         # =========================================================================
         if PLAYLIST_URL:
-            print(f"\n📋 Sincronizando playlist general de pendientes...")
+            logger.info(f"📋 Sincronizando playlist general de pendientes...")
             videos_yt = obtener_videos_playlist(PLAYLIST_URL)
             playlist_ids_general = {
                 v["youtube_id"].strip(): v for v in videos_yt}
 
             if len(playlist_ids_general) == 0:
-                print(
+                logger.warning(
                     "⚠️ ADVERTENCIA: La playlist general devolvió 0 videos. Omitiendo sincronización.")
             else:
-                print(
+                logger.info(
                     f"  ✅ Se encontraron {len(playlist_ids_general)} videos en la playlist general.")
                 sincronizar_playlist_global(
                     driver, PHP_ENDPOINT, playlist_ids_general
                 )
 
+    except Exception as e:
+        estado = "ERROR"
+        mensaje = f"{type(e).__name__}: {e}"
+        logger.exception("Error no controlado durante la ejecución")
+        raise
+
     finally:
-        print("\n🔒 Cerrando navegador Selenium...")
+        logger.info("🔒 Cerrando navegador Selenium...")
         driver.quit()
+        fin = datetime.now(ZoneInfo("America/Santiago"))
+        guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje)
 
 
 if __name__ == '__main__':
