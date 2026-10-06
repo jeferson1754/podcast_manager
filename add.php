@@ -20,27 +20,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($type == $temporadas) {
         $podcast_id = $_POST['podcast_id'];
         $number = $_POST['number'];
+        $title = $_POST['title'] ?? ('Temporada ' . $number); // O el campo de título que uses
 
-        // Verifica si ya existe
-        $stmt = $conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? AND number = ? ");
+        // Verifica si ya existe esta temporada específica para este podcast
+        $stmt = $conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? AND number = ?");
         $stmt->bind_param("ii", $podcast_id, $number);
         $stmt->execute();
-        $stmt->store_result();
+        $result = $stmt->get_result();
 
-        if ($stmt->num_rows > 0) {
-            // Ya existe → actualizar (aquí puedes actualizar algún campo adicional si quieres)
+        if ($result->num_rows > 0) {
+            // Ya existe: Obtenemos su ID real para actualizar solo sus datos 
+            // sin tocar las demás temporadas ni romper registros históricos.
+            $row = $result->fetch_assoc();
+            $season_id = $row['id'];
             $stmt->close();
-            $stmtUpdate = $conn->prepare("UPDATE seasons SET number = ? WHERE id = ? ");
-            $stmtUpdate->bind_param("ii", $number, $podcast_id);
+
+            $stmtUpdate = $conn->prepare("UPDATE seasons SET title = ? WHERE id = ?");
+            $stmtUpdate->bind_param("si", $title, $season_id);
             $stmtUpdate->execute();
             $stmtUpdate->close();
+
+            // Opcional: puedes redirigir con un mensaje de que se actualizó la temporada existente
         } else {
-            // No existe → insertar
+            // No existe: Se inserta como una NUEVA temporada. 
+            // Las temporadas anteriores se mantienen intactas en la base de datos.
             $stmt->close();
-            $stmtInsert = $conn->prepare("INSERT INTO seasons (podcast_id, number) VALUES (?, ?)");
-            $stmtInsert->bind_param("ii", $podcast_id, $number);
+
+            $stmtInsert = $conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)");
+            $stmtInsert->bind_param("iis", $podcast_id, $number, $title);
             $stmtInsert->execute();
             $stmtInsert->close();
+
+            // Opcional: redirigir con un mensaje de éxito de creación
         }
     } elseif ($type == $episodios) {
         $season_id = $_POST['season_id'];

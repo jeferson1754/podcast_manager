@@ -424,11 +424,18 @@ $section = $_GET['section'] ?? $podcast;
 
                 <!-- TABLA TEMPORADAS -->
             <?php elseif ($section == $temporadas): ?>
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div>
+                        <h5 class="mb-0 text-dark fw-bold"><i class="fas fa-layer-group me-2 text-primary"></i>Gestión de Temporadas</h5>
+                        <p class="text-muted small mb-0">Agrega nuevas temporadas para los podcasts actuales conservando el historial de las anteriores.</p>
+                    </div>
+                </div>
+
                 <div class="table-responsive">
                     <table class="table table-hover align-middle">
                         <thead>
                             <tr>
-                                <th style="width: 60px;">#</th>
+                                <th style="width: 60px;">#ID</th>
                                 <th style="width: 80px;">Logo</th>
                                 <th>Podcast</th>
                                 <th>Temporada</th>
@@ -438,12 +445,12 @@ $section = $_GET['section'] ?? $podcast;
                         </thead>
                         <tbody>
                             <?php
-                            // Consulta mejorada trayendo la imagen del podcast y el conteo de episodios por temporada
+                            // Consulta para listar todas las temporadas (tanto activas/nuevas como antiguas)
                             $sql = "SELECT s.*, p.title as podcast_title, p.image as podcast_image,
-                           (SELECT COUNT(*) FROM episodes e WHERE e.season_id = s.id) as total_episodios
-                    FROM seasons s 
-                    JOIN podcasts p ON s.podcast_id = p.id 
-                    ORDER BY p.title, s.number";
+                                   (SELECT COUNT(*) FROM episodes e WHERE e.season_id = s.id) as total_episodios
+                            FROM seasons s 
+                            JOIN podcasts p ON s.podcast_id = p.id 
+                            ORDER BY p.title, s.number DESC";
 
                             $result = $conn->query($sql);
                             if ($result && $result->num_rows > 0):
@@ -476,7 +483,7 @@ $section = $_GET['section'] ?? $podcast;
                                             <a href="edit.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-primary me-1 border" title="Editar">
                                                 <i class="fas fa-pen"></i> Editar
                                             </a>
-                                            <a href="delete.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-danger border" onclick="return confirm('¿Estás seguro de eliminar esta temporada?')" title="Eliminar">
+                                            <a href="delete.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-danger border" onclick="return confirm('¿Estás seguro de eliminar esta temporada? Los episodios asociados podrían verse afectados.')" title="Eliminar">
                                                 <i class="fas fa-trash"></i> Eliminar
                                             </a>
                                         </td>

@@ -90,6 +90,61 @@ def guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje=""):
     )
     logger.info("=" * 70)
 
+def obtener_ultima_temporada_id(cursor, podcast_id):
+    """Busca el ID de la temporada más reciente registrada para un podcast específico."""
+    cursor.execute(
+        """
+        SELECT id FROM seasons 
+        WHERE podcast_id = %s 
+        ORDER BY number DESC, id DESC 
+        LIMIT 1
+        """,
+        (podcast_id,)
+    )
+    resultado = cursor.fetchone()
+
+    # Si encuentra una temporada, retorna su ID; de lo contrario, None
+    return resultado['id'] if resultado else None
+
+
+def insertar_episodio_en_ultima_temporada(cursor, conn, podcast_id, video_data):
+    """Inserta un nuevo episodio exclusivamente en la última temporada registrada del podcast."""
+
+    # 1. Obtenemos el ID de la última temporada
+    season_id = obtener_ultima_temporada_id(cursor, podcast_id)
+
+    if not season_id:
+        logger.error(
+            f"No se encontró ninguna temporada registrada para el podcast ID: {podcast_id}")
+        return False
+
+    try:
+        # 2. Insertamos el episodio usando ese season_id
+        sql = """
+            INSERT INTO episodes (season_id, youtube_id, title, duration, publish_date, status)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                title = VALUES(title),
+                duration = VALUES(duration)
+        """
+        valores = (
+            season_id,
+            video_data["youtube_id"],
+            video_data["title"],
+            video_data["duration"],
+            video_data["publish_date"],
+            "PENDING"  # o el estado por defecto que uses
+        )
+        cursor.execute(sql, valores)
+        conn.commit()
+        return True
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(
+            f"Error al insertar el episodio en la última temporada: {e}")
+        return False
+
 
 def duracion_a_segundos(iso_duration):
     try:
@@ -182,7 +237,7 @@ def enviar_a_php_con_session(driver, php_endpoint, payload):
 def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
     """Extrae videos de una playlist de YouTube usando la API oficial v3."""
     youtube = build("youtube", "v3", developerKey=API_KEY)
-    
+
     # 1. Extraer el ID de la playlist si el usuario pasó una URL completa
     playlist_id = url_or_playlist_id
     if "list=" in url_or_playlist_id:
@@ -205,32 +260,35 @@ def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
 
         for item in response.get("items", []):
             snippet = item.get("snippet", {})
-            
+
             # Omitir videos eliminados o privados
             if snippet.get("title") == "Private video" or snippet.get("title") == "Deleted video":
                 continue
-                
+
             vid_id = snippet.get("resourceId", {}).get("videoId")
             if vid_id:
                 video_ids.append(vid_id)
-                
+
                 # Procesamiento y conversión de fecha a America/Santiago (Tu lógica validada)
                 publish_date = None
-                raw_published_at = snippet.get("publishedAt") # Formato: "2026-10-06T15:30:00Z"
+                # Formato: "2026-10-06T15:30:00Z"
+                raw_published_at = snippet.get("publishedAt")
 
                 if raw_published_at:
                     try:
                         utc_dt = datetime.strptime(
                             raw_published_at, "%Y-%m-%dT%H:%M:%SZ"
                         ).replace(tzinfo=ZoneInfo("UTC"))
-                        
-                        chile_dt = utc_dt.astimezone(ZoneInfo("America/Santiago"))
+
+                        chile_dt = utc_dt.astimezone(
+                            ZoneInfo("America/Santiago"))
                         publish_date = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
                     except Exception:
                         pass
 
                 if not publish_date:
-                    publish_date = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y-%m-%d %H:%M:%S")
+                    publish_date = datetime.now(
+                        ZoneInfo("America/Santiago")).strftime("%Y-%m-%d %H:%M:%S")
 
                 item_map[vid_id] = {
                     "youtube_id": vid_id,
@@ -253,8 +311,10 @@ def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
                 for vid_item in vid_response.get("items", []):
                     v_id = vid_item["id"]
                     if v_id in item_map:
-                        iso_duration = vid_item.get("contentDetails", {}).get("duration", "PT0S")
-                        item_map[v_id]["duration"] = parsear_duracion_iso(iso_duration)
+                        iso_duration = vid_item.get(
+                            "contentDetails", {}).get("duration", "PT0S")
+                        item_map[v_id]["duration"] = parsear_duracion_iso(
+                            iso_duration)
 
         # Rellenar con "00:00:00" si a algún video le faltó la duración y armar la lista final
         for vid_id in video_ids:
@@ -274,12 +334,13 @@ def parsear_duracion_iso(iso_duration):
     match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', iso_duration)
     if not match:
         return "00:00:00"
-    
+
     horas = int(match.group(1)) if match.group(1) else 0
     minutos = int(match.group(2)) if match.group(2) else 0
     segundos = int(match.group(3)) if match.group(3) else 0
-    
+
     return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
+
 
 def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
     """Sincroniza la playlist global de pendientes de forma totalmente independiente,
@@ -289,7 +350,8 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
 
     # 🛡️ VALIDACIÓN DE SEGURIDAD CRÍTICA
     if len(playlist_ids) == 0:
-        logger.warning("⚠️ ADVERTENCIA: La playlist global está vacía. Omitiendo para evitar falsos positivos.")
+        logger.warning(
+            "⚠️ ADVERTENCIA: La playlist global está vacía. Omitiendo para evitar falsos positivos.")
         return
 
     # 1. Obtener TODOS los episodios existentes en la BD (o consultar a PHP un listado global)
@@ -414,7 +476,8 @@ def procesar():
             if 'podcast' not in tipo or not channel_id:
                 continue
 
-            logger.info(f"🔍 Procesando podcast: {nombre_canal} ({channel_id})...")
+            logger.info(
+                f"🔍 Procesando podcast: {nombre_canal} ({channel_id})...")
 
             yt_channel_url = f"https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails&id={channel_id}&key={API_KEY}"
             raw_chan = obtener_json_con_selenium(driver, yt_channel_url)
@@ -440,7 +503,8 @@ def procesar():
 
             podcast_id = res_php.get('podcast_id')
             if not podcast_id:
-                logger.error(f"  ❌ Error en PHP al registrar el podcast: {res_php}")
+                logger.error(
+                    f"  ❌ Error en PHP al registrar el podcast: {res_php}")
                 stats["errores"] += 1
                 continue
 
