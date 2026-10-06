@@ -8,7 +8,8 @@ from datetime import datetime
 import isodate
 from zoneinfo import ZoneInfo  # Requiere Python 3.9+
 import yt_dlp  # Necesario para leer playlists sin descargar
-
+import re
+from googleapiclient.discovery import build
 from navegador import configurar_navegador
 
 from selenium import webdriver
@@ -178,74 +179,107 @@ def enviar_a_php_con_session(driver, php_endpoint, payload):
         return {"status": "error", "message": str(e)}
 
 
-def obtener_videos_playlist(url_playlist):
-    """Extrae de forma rápida los IDs, títulos, duración, canal y fecha real convertida a Santiago usando yt-dlp."""
-    ydl_opts = {
-        'extract_flat': True,
-        'skip_download': True,
-        'quiet': True
-    }
+def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
+    """Extrae videos de una playlist de YouTube usando la API oficial v3."""
+    youtube = build("youtube", "v3", developerKey=API_KEY)
+    
+    # 1. Extraer el ID de la playlist si el usuario pasó una URL completa
+    playlist_id = url_or_playlist_id
+    if "list=" in url_or_playlist_id:
+        match = re.search(r'[?&]list=([a-zA-Z0-9_-]+)', url_or_playlist_id)
+        if match:
+            playlist_id = match.group(1)
 
     videos = []
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            resultado = ydl.extract_info(url_playlist, download=False)
-            if resultado and 'entries' in resultado:
-                for entry in resultado['entries']:
-                    if entry:
-                        vid_id = entry.get('id')
-                        if vid_id:
-                            vid_title = entry.get('title') or 'Sin título'
-                            channel_id = entry.get('channel_id') or entry.get(
-                                'uploader_id') or ''
-                            channel_name = entry.get('channel') or entry.get(
-                                'uploader') or 'Desconocido'
+    video_ids = []
+    item_map = {}
 
-                            # Procesamiento y conversión de fecha a America/Santiago
-                            publish_date = None
-                            raw_date = entry.get(
-                                'upload_date') or entry.get('release_date')
+    try:
+        # 2. Obtener los elementos de la playlist (paginación básica o hasta 50 resultados)
+        request = youtube.playlistItems().list(
+            part="snippet",
+            playlistId=playlist_id,
+            maxResults=50
+        )
+        response = request.execute()
 
-                            # Formato YYYYMMDD que suele dar yt-dlp flat
-                            if raw_date and len(raw_date) == 8:
-                                try:
-                                    # Lo interpretamos como UTC al inicio del día o medianoche
-                                    utc_dt = datetime.strptime(
-                                        raw_date, "%Y%m%d").replace(tzinfo=ZoneInfo("UTC"))
-                                    chile_dt = utc_dt.astimezone(
-                                        ZoneInfo("America/Santiago"))
-                                    publish_date = chile_dt.strftime(
-                                        "%Y-%m-%d %H:%M:%S")
-                                except Exception:
-                                    pass
+        for item in response.get("items", []):
+            snippet = item.get("snippet", {})
+            
+            # Omitir videos eliminados o privados
+            if snippet.get("title") == "Private video" or snippet.get("title") == "Deleted video":
+                continue
+                
+            vid_id = snippet.get("resourceId", {}).get("videoId")
+            if vid_id:
+                video_ids.append(vid_id)
+                
+                # Procesamiento y conversión de fecha a America/Santiago (Tu lógica validada)
+                publish_date = None
+                raw_published_at = snippet.get("publishedAt") # Formato: "2026-10-06T15:30:00Z"
 
-                            # Si no se pudo parsear con el formato anterior, usamos la actual como respaldo
-                            if not publish_date:
-                                publish_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if raw_published_at:
+                    try:
+                        utc_dt = datetime.strptime(
+                            raw_published_at, "%Y-%m-%dT%H:%M:%SZ"
+                        ).replace(tzinfo=ZoneInfo("UTC"))
+                        
+                        chile_dt = utc_dt.astimezone(ZoneInfo("America/Santiago"))
+                        publish_date = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        pass
 
-                            # Duración
-                            duracion_segundos = entry.get('duration')
-                            if duracion_segundos and isinstance(duracion_segundos, (int, float)) and duracion_segundos > 0:
-                                horas = int(duracion_segundos // 3600)
-                                minutos = int((duracion_segundos % 3600) // 60)
-                                segundos = int(duracion_segundos % 60)
-                                duracion_str = f"{horas:02d}:{minutos:02d}:{segundos:02d}"
-                            else:
-                                duracion_str = "00:00:00"
+                if not publish_date:
+                    publish_date = datetime.now(ZoneInfo("America/Santiago")).strftime("%Y-%m-%d %H:%M:%S")
 
-                            videos.append({
-                                "youtube_id": str(vid_id).strip(),
-                                "title": str(vid_title).strip(),
-                                "duration": duracion_str,
-                                "channel_id": str(channel_id).strip(),
-                                "channel_name": str(channel_name).strip(),
-                                "publish_date": publish_date
-                            })
-        except Exception as e:
-            logger.error(f"Error al extraer la playlist general: {e}")
+                item_map[vid_id] = {
+                    "youtube_id": vid_id,
+                    "title": snippet.get("title", "Sin título").strip(),
+                    "channel_id": snippet.get("channelId", "").strip(),
+                    "channel_name": snippet.get("videoOwnerChannelTitle") or snippet.get("channelTitle", "Desconocido").strip(),
+                    "publish_date": publish_date
+                }
+
+        # 3. Consultar las duraciones en lote (videos().list acepta hasta 50 IDs separados por comas)
+        if video_ids:
+            for i in range(0, len(video_ids), 50):
+                batch_ids = video_ids[i:i+50]
+                vid_request = youtube.videos().list(
+                    part="contentDetails",
+                    id=",".join(batch_ids)
+                )
+                vid_response = vid_request.execute()
+
+                for vid_item in vid_response.get("items", []):
+                    v_id = vid_item["id"]
+                    if v_id in item_map:
+                        iso_duration = vid_item.get("contentDetails", {}).get("duration", "PT0S")
+                        item_map[v_id]["duration"] = parsear_duracion_iso(iso_duration)
+
+        # Rellenar con "00:00:00" si a algún video le faltó la duración y armar la lista final
+        for vid_id in video_ids:
+            if vid_id in item_map:
+                if "duration" not in item_map[vid_id]:
+                    item_map[vid_id]["duration"] = "00:00:00"
+                videos.append(item_map[vid_id])
+
+    except Exception as e:
+        print(f"Error al consultar la API de YouTube: {e}")
 
     return videos
 
+
+def parsear_duracion_iso(iso_duration):
+    """Convierte duración ISO 8601 (ej: PT1H2M10S) a formato HH:MM:SS."""
+    match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', iso_duration)
+    if not match:
+        return "00:00:00"
+    
+    horas = int(match.group(1)) if match.group(1) else 0
+    minutos = int(match.group(2)) if match.group(2) else 0
+    segundos = int(match.group(3)) if match.group(3) else 0
+    
+    return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
 
 def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
     """Sincroniza la playlist global de pendientes de forma totalmente independiente,
@@ -474,7 +508,7 @@ def procesar():
         # =========================================================================
         if PLAYLIST_URL:
             logger.info(f"📋 Sincronizando playlist general de pendientes...")
-            videos_yt = obtener_videos_playlist(PLAYLIST_URL)
+            videos_yt = obtener_videos_playlist_api(PLAYLIST_URL, API_KEY)
             playlist_ids_general = {
                 v["youtube_id"].strip(): v for v in videos_yt}
 

@@ -270,6 +270,11 @@ $section = $_GET['section'] ?? $podcast;
             font-size: 0.875rem;
             color: #94a3b8;
         }
+
+        .badge.bg-warning i.fa-circle {
+            color: #fd7e14 !important;
+            /* Naranja fuerte */
+        }
     </style>
 </head>
 
@@ -496,10 +501,16 @@ $section = $_GET['section'] ?? $podcast;
             <?php elseif ($section == $episodios): ?>
                 <?php
                 $result = $conn->query("SELECT e.*, s.number as season_number, p.title as podcast_title 
-                                        FROM episodes e 
-                                        JOIN seasons s ON e.season_id = s.id 
-                                        JOIN podcasts p ON s.podcast_id = p.id 
-                                        ORDER BY e.publish_date DESC");
+                        FROM episodes e 
+                        JOIN seasons s ON e.season_id = s.id 
+                        JOIN podcasts p ON s.podcast_id = p.id 
+                        ORDER BY 
+                            CASE 
+                                WHEN e.status = 'PENDING' THEN 1
+                                WHEN DATE(e.publish_date) = CURDATE() AND e.duration = '00:00:00' THEN 2
+                                ELSE 3
+                            END ASC, 
+                            e.publish_date DESC");
 
                 $episodes_list = [];
                 if ($result && $result->num_rows > 0) {
@@ -565,11 +576,20 @@ $section = $_GET['section'] ?? $podcast;
                                             <?php
                                             $fechaEpisodio = date('Y-m-d', strtotime($episode['publish_date']));
                                             $hoy = date('Y-m-d');
-                                            // Condición: Si es de hoy y la duración es 00:00:00 (o si prefieres usar directamente el status)
+                                            $status = $episode['status'] ?? ''; // Aseguramos que lea el status
+
+                                            // Condición 1: Si es un directo de hoy con duración 00:00:00 -> Círculo Rojo (En vivo)
                                             if ($fechaEpisodio === $hoy && $episode['duration'] === '00:00:00'):
                                             ?>
                                                 <span class="badge bg-danger text-white px-2 py-1">
                                                     <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> En vivo
+                                                </span>
+                                            <?php
+                                            // Condición 2: Si el estado es PENDING -> Círculo Naranja
+                                            elseif ($status === 'PENDING'):
+                                            ?>
+                                                <span class="badge bg-warning text-dark px-2 py-1" title="Pendiente en playlist">
+                                                    <i class="fas fa-circle me-1 text-orange" style="font-size: 6px; vertical-align: middle;"></i> Pendiente
                                                 </span>
                                             <?php else: ?>
                                                 <span><i class="far fa-clock me-1"></i><?= htmlspecialchars($episode['duration']); ?></span>
@@ -640,10 +660,16 @@ $section = $_GET['section'] ?? $podcast;
                                             <?php
                                             $fechaEpisodio = date('Y-m-d', strtotime($episode['publish_date']));
                                             $hoy = date('Y-m-d');
+                                            $status = $episode['status'] ?? '';
+
                                             if ($fechaEpisodio === $hoy && $episode['duration'] === '00:00:00'):
                                             ?>
                                                 <span class="badge bg-danger text-white px-2 py-1">
                                                     <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> En vivo
+                                                </span>
+                                            <?php elseif ($status === 'PENDING'): ?>
+                                                <span class="badge bg-warning text-dark px-2 py-1" title="Pendiente en playlist">
+                                                    <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> Pendiente
                                                 </span>
                                             <?php else: ?>
                                                 <?= htmlspecialchars($episode['duration']); ?>
