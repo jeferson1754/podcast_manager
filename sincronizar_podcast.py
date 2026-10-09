@@ -192,6 +192,22 @@ def obtener_json_con_selenium(driver, url):
     """
     return driver.execute_async_script(js_code)
 
+def obtener_csv_con_reintentos(url, max_intentos=3, espera_base=5):
+    """Descarga datos aplicando reintentos automáticos ante fallos de red o timeouts."""
+    for intento in range(1, max_intentos + 1):
+        try:
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            return response.text  # Si sale bien, retorna el contenido de inmediato
+            
+        except requests.exceptions.RequestException as e:
+            if intento < max_intentos:
+                print(f"[AVISO] Intento {intento}/{max_intentos} falló: {e}. Reintentando en {espera_base}s...")
+                time.sleep(espera_base)
+                # Opcional: puedes duplicar el tiempo de espera en cada fallo (espera_base * 2)
+            else:
+                print(f"[ERROR CRÍTICO] Se agotaron los {max_intentos} intentos. No se pudo conectar.")
+                raise e
 
 def enviar_a_php_con_session(driver, php_endpoint, payload):
     """Envía datos por POST usando JavaScript (fetch) directamente dentro
@@ -449,7 +465,7 @@ def procesar():
         time.sleep(3)
 
         logger.info("📄 Descargando configuración desde Google Sheets CSV...")
-        raw_csv = obtener_json_con_selenium(driver, CSV_URL)
+        raw_csv = obtener_csv_con_reintentos(CSV_URL)
 
         lines = raw_csv.splitlines()
         reader = csv.reader(lines)
