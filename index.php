@@ -345,7 +345,7 @@ $section = $_GET['section'] ?? $podcast;
                             // Consulta mejorada con conteo de episodios y última temporada
                             $sql = "SELECT p.*, 
                            (SELECT COUNT(*) FROM episodes e WHERE e.podcast_id = p.id) as total_episodios,
-                           (SELECT title FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) as temporada_actual
+                           (SELECT number FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) as temporada_actual
                     FROM podcasts p 
                     ORDER BY p.id";
 
@@ -373,7 +373,7 @@ $section = $_GET['section'] ?? $podcast;
                                         <td>
                                             <span class="badge bg-light text-dark border">
                                                 <i class="fas fa-layer-group me-1 text-muted"></i>
-                                                <?= htmlspecialchars($podcasts['temporada_actual'] ?? 'Sin Temporada'); ?>
+                                                <?= "Temporada " . htmlspecialchars($podcasts['temporada_actual'] ?? '0'); ?>
                                             </span>
                                         </td>
                                         <td class="text-center">
@@ -471,7 +471,7 @@ $section = $_GET['section'] ?? $podcast;
                                         <td>
                                             <span class="badge bg-light text-dark border px-2 py-1">
                                                 <i class="fas fa-layer-group me-1 text-muted"></i>
-                                                <?= htmlspecialchars($season['title'] ?: 'Temporada ' . $season['number']); ?>
+                                                <?= 'Temporada ' . $season['number'] ?: htmlspecialchars($season['title']); ?>
                                             </span>
                                         </td>
                                         <td class="text-center">
