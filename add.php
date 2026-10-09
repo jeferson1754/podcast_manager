@@ -3,78 +3,56 @@ $type = isset($_GET['type']) ? $_GET['type'] : $podcast;
 
 include('bd.php');
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // Connect to DB 
-
     if ($conn->connect_error) {
         die('Connection Error');
     }
-    if ($type == $podcast) {
-        $title = $_POST['title'];
-        $image = $_POST['image'];
-        $link = $_POST['link'];
-        $state = $_POST['state'];
-        $stmt = $conn->prepare("INSERT INTO podcasts (title, image, description, state) VALUES (?, ?, ?, ?)");
-        $stmt->bind_param("ssss", $title, $image, $link, $state);
-        $stmt->execute();
-        $stmt->close();
-    } elseif ($type == $temporadas) {
-        $podcast_id = $_POST['podcast_id'];
-        $number = $_POST['number'];
-        $title = $_POST['title'] ?? ('Temporada ' . $number); // O el campo de título que uses
+    if ($type ==$podcast) {
+        $title =$_POST['title'];
+        $image =$_POST['image'];
+        $link =$_POST['link'];
+        $state =$_POST['state'];
+        $stmt =$conn->prepare("INSERT INTO podcasts (title, image, description, state) VALUES (?, ?, ?, ?)");
+        $stmt->bind_param("ssss", $title,$image, $link,$state);
+        $stmt->execute();$stmt->close();
+    } elseif ($type == $temporadas) {$podcast_id = $_POST['podcast_id'];$number = $_POST['number'];$title = $_POST['title'] ?? ('Temporada ' .$number);
 
-        // Verifica si ya existe esta temporada específica para este podcast
-        $stmt = $conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? AND number = ?");
-        $stmt->bind_param("ii", $podcast_id, $number);
-        $stmt->execute();
-        $result = $stmt->get_result();
+        $stmt =$conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? AND number = ?");
+        $stmt->bind_param("ii", $podcast_id, $number);$stmt->execute();
+        $result =$stmt->get_result();
 
-        if ($result->num_rows > 0) {
-            // Ya existe: Obtenemos su ID real para actualizar solo sus datos 
-            // sin tocar las demás temporadas ni romper registros históricos.
-            $row = $result->fetch_assoc();
-            $season_id = $row['id'];
-            $stmt->close();
+        if ($result->num_rows > 0) {$row = $result->fetch_assoc();$season_id = $row['id'];$stmt->close();
 
-            $stmtUpdate = $conn->prepare("UPDATE seasons SET title = ? WHERE id = ?");
-            $stmtUpdate->bind_param("si", $title, $season_id);
-            $stmtUpdate->execute();
-            $stmtUpdate->close();
-
-            // Opcional: puedes redirigir con un mensaje de que se actualizó la temporada existente
+            $stmtUpdate =$conn->prepare("UPDATE seasons SET title = ? WHERE id = ?");
+            $stmtUpdate->bind_param("si", $title,$season_id);
+            $stmtUpdate->execute();$stmtUpdate->close();
         } else {
-            // No existe: Se inserta como una NUEVA temporada. 
-            // Las temporadas anteriores se mantienen intactas en la base de datos.
             $stmt->close();
 
-            $stmtInsert = $conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)");
-            $stmtInsert->bind_param("iis", $podcast_id, $number, $title);
-            $stmtInsert->execute();
-            $stmtInsert->close();
-
-            // Opcional: redirigir con un mensaje de éxito de creación
+            $stmtInsert =$conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)");
+            $stmtInsert->bind_param("iis", $podcast_id, $number,$title);
+            $stmtInsert->execute();$stmtInsert->close();
         }
-    } elseif ($type == $episodios) {
-        $season_id = $_POST['season_id'];
-        $number = $_POST['number'];
-        $title = $_POST['title'];
-        $duration = $_POST['duration'];
-        $publish_date = $_POST['publish_date'];
-        $stmt = $conn->prepare("INSERT INTO episodes (season_id, number, title, duration, publish_date) VALUES (?, ?, ?, ?, ?)");
-        $stmt->bind_param("iisss", $season_id, $number, $title, $duration, $publish_date);
-        $stmt->execute();
-        $stmt->close();
-    } elseif ($type == $calendario) {
-        $podcast_id = $_POST['schedule_id'];
-        $number = $_POST['start_time'];
-        $duration = $_POST['day'];
-        $stmt = $conn->prepare("INSERT INTO `schedule`( `day_of_week`, `start_time`, `podcast_id`) VALUES (?, ?, ?)");
-        $stmt->bind_param("ssi", $duration, $number, $podcast_id);
-        $stmt->execute();
-        $stmt->close();
+    } elseif ($type == $episodios) {$season_id = $_POST['season_id'];$number = $_POST['number'];$title = $_POST['title'];$duration = $_POST['duration'];$publish_date = $_POST['publish_date'];$youtube_link = trim($_POST['youtube_link'] ?? '');$youtube_id = null;
+        if (!empty($youtube_link)) {
+            if (preg_match('/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i', $youtube_link,$match)) {
+                $youtube_id =$match[1];
+            }
+        }
+
+        $stmt =$conn->prepare("INSERT INTO episodes (season_id, number, title, duration, publish_date, youtube_id) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("iissss", $season_id,$number, $title,$duration, $publish_date,$youtube_id);
+        $stmt->execute();$stmt->close();
+    } elseif ($type ==$calendario) {
+        $podcast_id =$_POST['schedule_id'];
+        $number =$_POST['start_time'];
+        $duration =$_POST['day'];
+        $stmt =$conn->prepare("INSERT INTO `schedule`( `day_of_week`, `start_time`, `podcast_id`) VALUES (?, ?, ?)");
+        $stmt->bind_param("ssi", $duration, $number,$podcast_id);
+        $stmt->execute();$stmt->close();
     }
     header('Location: index.php?section=' . $type);
     exit;
-} // For GET requests, show a simple HTML form (without JS validations) 
+} 
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -84,27 +62,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Agregar Nuevos <?php echo ucfirst($type); ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 
 <body>
-    <div class="container mt-5">
+    <div class="container mt-5 mb-5">
         <h2>Agregar Nuevos <?php echo ucfirst($type); ?></h2>
         <form action="" method="post">
-            <?php if ($type == $podcast): ?>
-
+            <?php if ($type ==$podcast): ?>
                 <div class="mb-3">
                     <label class="form-label">Titulo</label>
                     <input type="text" class="form-control" name="title" required>
                 </div>
-
                 <div class="mb-3"> <label class="form-label">Imagen (Link)</label>
                     <input type="text" class="form-control" name="image" required>
                 </div>
-
                 <div class="mb-3"> <label class="form-label">Link de Youtube</label>
                     <input type="text" class="form-control" name="link" required>
                 </div>
-
                 <div class="mb-3">
                     <label class="form-label">Estado</label>
                     <select class="form-select" name="state" required>
@@ -113,26 +88,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <option value="Finalizado">Finalizado</option>
                     </select>
                 </div>
-            <?php elseif ($type == $temporadas): // Fetch podcasts for the dropdown 
-                $result = $conn2->query("SELECT podcasts.id, podcasts.title, COALESCE(MAX(seasons.number), 0) + 1 AS number FROM podcasts LEFT JOIN seasons ON seasons.podcast_id = podcasts.id GROUP BY podcasts.id, podcasts.title;");
+            <?php elseif ($type ==$temporadas): 
+                $result =$conn2->query("SELECT podcasts.id, podcasts.title, COALESCE(MAX(seasons.number), 0) + 1 AS number FROM podcasts LEFT JOIN seasons ON seasons.podcast_id = podcasts.id GROUP BY podcasts.id, podcasts.title;");
             ?>
                 <div class="mb-3">
                     <label class="form-label">Podcast</label>
                     <select class="form-select" name="podcast_id" id="podcastSelect" required onchange="actualizarTemporada()">
                         <option value="" disabled selected>Selecciona un podcast</option>
-                        <?php while ($pod = $result->fetch_assoc()): ?>
+                        <?php while ($pod =$result->fetch_assoc()): ?>
                             <option value="<?php echo $pod['id']; ?>" data-number="<?php echo $pod['number']; ?>">
                                 <?php echo htmlspecialchars($pod['title']); ?>
                             </option>
                         <?php endwhile; ?>
                     </select>
                 </div>
-
                 <div class="mb-3">
                     <label class="form-label">Número de Temporada (+1)</label>
                     <input type="number" class="form-control" name="number" min="1" id="seasonNumber" required>
                 </div>
-
                 <script>
                     function actualizarTemporada() {
                         const select = document.getElementById('podcastSelect');
@@ -142,8 +115,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 </script>
 
-            <?php elseif ($type == $episodios): // Fetch seasons for the dropdown 
-                $result = $conn2->query("
+            <?php elseif ($type ==$episodios): 
+                $result =$conn2->query("
                 SELECT 
                     s.id AS season_id,
                     p.id AS podcast_id,
@@ -159,25 +132,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE s2.podcast_id = p.id
                 )
                 GROUP BY s.id, p.id, p.title, s.number;
-
-        ");
+            ");
             ?>
+                <!-- BLOQUE AUTOCOMPLETAR VÍA API DE YOUTUBE -->
+                <div class="mb-3 p-3 bg-light border rounded">
+                    <label class="form-label fw-bold text-primary"><i class="fab fa-youtube me-1"></i> Autocompletar con API de YouTube</label>
+                    <div class="input-group">
+                        <input type="url" class="form-control" id="youtubeLinkInput" name="youtube_link" placeholder="https://www.youtube.com/watch?v=...">
+                        <button class="btn btn-outline-primary" type="button" id="btnAutoFill">
+                            <i class="fas fa-magic me-1"></i> Cargar con API
+                        </button>
+                    </div>
+                    <div class="form-text" id="autoFillFeedback">Pega el link para traer título, duración y fecha exacta en zona horaria Santiago.</div>
+                </div>
+
                 <div class="mb-3">
                     <label class="form-label">Temporada</label>
                     <select class="form-select" name="season_id" id="seasonSelect" required onchange="actualizarCapitulo()">
                         <option value="" disabled selected>Selecciona una temporada</option>
-                        <?php while ($season = $result->fetch_assoc()): ?>
+                        <?php while ($season =$result->fetch_assoc()): ?>
                             <option
                                 value="<?php echo $season['season_id']; ?>"
                                 data-capitulo="<?php echo $season['capitulo']; ?>">
-                                <?php echo htmlspecialchars($season['title']) . ' - Temporada ' . $season['temporada']; ?>
+                                <?php echo htmlspecialchars($season['title']) . ' - Temporada ' .$season['temporada']; ?>
                             </option>
                         <?php endwhile; ?>
                     </select>
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label">Número de Episodio (+)</label>
+                    <label class="form-label">Número de Episodio</label>
                     <input type="number" class="form-control" name="number" id="episodeNumber" min="1" required>
                 </div>
 
@@ -189,112 +173,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         document.getElementById('episodeNumber').value = capitulo;
                     }
                 </script>
+
                 <div class="mb-3">
-                    <label class="form-label">Titulo</label>
-                    <input type="text" class="form-control" name="title" required>
+                    <label class="form-label">Título</label>
+                    <input type="text" class="form-control" id="titleInput" name="title" required>
                 </div>
+
                 <div class="mb-3">
                     <label class="form-label">Duración (máx. 10:00:00)</label>
                     <input type="text" id="durationInput" name="duration" class="form-control" maxlength="8" placeholder="H:MM:SS" required>
                     <div id="errorMsg" class="invalid-feedback d-none">Duración inválida. Formato: H:MM:SS, máximo 10:00:00</div>
                 </div>
 
+                <div class="mb-3">
+                    <label class="form-label">Fecha de Publicación</label>
+                    <input type="datetime-local" class="form-control" id="publishDateInput" name="publish_date" value="<?= $fecha_hoy . ' ' .$hora_actual; ?>" required>
+                </div>
+
+                <!-- Script JS para consultar get_video_info.php -->
                 <script>
-                    const input = document.getElementById('durationInput');
-                    const errorMsg = document.getElementById('errorMsg');
+                    document.getElementById('btnAutoFill').addEventListener('click', function() {
+                        const url = document.getElementById('youtubeLinkInput').value.trim();
+                        const feedback = document.getElementById('autoFillFeedback');
+                        const titleInput = document.getElementById('titleInput');
+                        const durationInput = document.getElementById('durationInput');
+                        const publishDateInput = document.getElementById('publishDateInput');
 
-                    input.addEventListener('input', function(e) {
-                        let val = input.value;
-
-                        // Quitar todo lo que no sea número
-                        val = val.replace(/\D/g, '');
-
-                        // Limitar máximo 6 dígitos (HHMMSS)
-                        if (val.length > 6) val = val.slice(0, 6);
-
-                        // Insertar ":" automáticamente
-                        // Dependiendo de longitud:
-                        // 1-2 dígitos: horas
-                        // 3-4 dígitos: horas + minutos
-                        // 5-6 dígitos: horas + minutos + segundos
-
-                        if (val.length <= 2) {
-                            // Solo horas
-                            val = val;
-                        } else if (val.length <= 4) {
-                            val = val.slice(0, val.length - 2) + ':' + val.slice(-2);
-                        } else {
-                            val = val.slice(0, val.length - 4) + ':' + val.slice(-4, val.length - 2) + ':' + val.slice(-2);
-                        }
-
-                        input.value = val;
-
-                        // Validar formato completo
-                        const pattern = /^([0-9]{1,2}):([0-5][0-9]):([0-5][0-9])$/;
-                        const match = val.match(pattern);
-
-                        if (!match) {
-                            marcarInvalido();
+                        if (!url) {
+                            alert('Por favor ingresa un link de YouTube primero.');
                             return;
                         }
 
-                        const horas = parseInt(match[1], 10);
-                        const minutos = parseInt(match[2], 10);
-                        const segundos = parseInt(match[3], 10);
+                        feedback.innerHTML = '<span class="text-info"><i class="fas fa-spinner fa-spin me-1"></i> Consultando a la API de YouTube...</span>';
 
-                        if (horas > 10 || (horas === 10 && (minutos > 0 || segundos > 0))) {
-                            marcarInvalido();
-                        } else {
-                            marcarValido();
-                        }
+                        fetch(`get_video_info.php?url=${encodeURIComponent(url)}`)
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.success) {
+                                    titleInput.value = data.title;
+                                    durationInput.value = data.duration;
+                                    publishDateInput.value = data.publish_date;
+                                    feedback.innerHTML = '<span class="text-success"><i class="fas fa-check-circle me-1"></i> ¡Datos cargados con éxito desde la API!</span>';
+                                } else {
+                                    throw new Error(data.error);
+                                }
+                            })
+                            .catch(error => {
+                                feedback.innerHTML = '<span class="text-danger"><i class="fas fa-exclamation-circle me-1"></i> Error: ' + error.message + '</span>';
+                            });
                     });
-
-                    function marcarInvalido() {
-                        input.classList.add('is-invalid');
-                        errorMsg.classList.remove('d-none');
-                    }
-
-                    function marcarValido() {
-                        input.classList.remove('is-invalid');
-                        errorMsg.classList.add('d-none');
-                    }
                 </script>
-
-
-
-                <div class="mb-3">
-                    <label class="form-label">Fecha de Publicacion</label>
-                    <input type="datetime-local" class="form-control" name="publish_date" value="<?= $fecha_hoy . ' ' . $hora_actual; ?>" required>
-                </div>
-            <?php elseif ($type == $calendario): // Fetch schedule data for the dropdown
-                $result = $conn2->query("SELECT id, title FROM podcasts");
-            ?>
-                <div class="mb-3">
-                    <label class="form-label">Podcast</label>
-                    <select class="form-select" name="schedule_id" required>
-                        <?php while ($schedule = $result->fetch_assoc()): ?>
-                            <option value="<?php echo $schedule['id']; ?>"> <?php echo $schedule['title']; ?></option>
-                        <?php endwhile; ?>
-                    </select>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Hora Emision</label>
-                    <input type="time" class="form-control" name="start_time" value="<?= $hora_actual; ?>" required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Día</label>
-                    <select class="form-select" name="day" required>
-                        <option value="">Seleccionar un día</option>
-                        <?php foreach ($dias as $dia): ?>
-                            <option value="<?= $dia ?>" <?= $dia === $dia_actual ? 'selected' : '' ?>>
-                                <?= $dia ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
             <?php endif; ?>
 
-            <button type=" submit" class="btn btn-success">Guardar</button>
+            <button type="submit" class="btn btn-success">Guardar</button>
             <a href="index.php?section=<?= $type; ?>" class="btn btn-secondary">Cancelar</a>
         </form>
     </div>
