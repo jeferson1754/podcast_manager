@@ -313,12 +313,20 @@ $section = $_GET['section'] ?? $podcast;
     <div class="container">
         <div class="main-card">
             <!-- Header Section -->
-            <div class="page-header">
+            <div class="page-header d-flex justify-content-between align-items-center">
                 <div>
                     <h3 class="fw-bold mb-0 text-capitalize"><?= htmlspecialchars($section); ?></h3>
                     <p class="text-muted small mb-0">Gestiona y organiza el contenido de tu plataforma</p>
                 </div>
-                <div>
+                <div class="d-flex gap-2">
+                    <?php if ($section == $podcast): ?>
+                        <!-- Botón para ir a la gestión de canales -->
+                        <a href="channels.php" class="btn btn-outline-primary d-inline-flex align-items-center gap-2">
+                            <i class="fas fa-tv"></i> <span>Gestionar Canales</span>
+                        </a>
+                    <?php endif; ?>
+
+                    <!-- Botón original de Nuevo elemento -->
                     <a href="add.php?type=<?= urlencode($section); ?>" class="btn btn-primary d-inline-flex align-items-center gap-2">
                         <i class="fas fa-plus"></i> <span>Nuevo <?= htmlspecialchars($section); ?></span>
                     </a>
@@ -334,6 +342,7 @@ $section = $_GET['section'] ?? $podcast;
                                 <th style="width: 60px;">#</th>
                                 <th style="width: 80px;">Logo</th>
                                 <th>Nombre del Podcast</th>
+                                <th>Frecuencia</th>
                                 <th>Temporada</th>
                                 <th class="text-center">Episodios</th>
                                 <th>Estado</th>
@@ -342,23 +351,27 @@ $section = $_GET['section'] ?? $podcast;
                         </thead>
                         <tbody>
                             <?php
-                            // Consulta mejorada con conteo de episodios y última temporada
-                            $sql = "SELECT p.*, 
-                           (SELECT COUNT(*) FROM episodes e WHERE e.podcast_id = p.id) as total_episodios,
-                           (SELECT number FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) as temporada_actual
-                    FROM podcasts p 
-                    ORDER BY p.id";
+                            // Consulta mejorada haciendo JOIN con channels y trayendo la frecuencia
+                            $sql = "SELECT p.*, c.name as channel_name, c.image as channel_image,
+                                   (SELECT COUNT(*) FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.podcast_id = p.id) as total_episodios,
+                                   (SELECT number FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) as temporada_actual
+                            FROM podcasts p 
+                            LEFT JOIN channels c ON p.channel_id = c.id
+                            ORDER BY p.id";
 
                             $result = $conn->query($sql);
                             if ($result && $result->num_rows > 0):
                                 while ($podcasts = $result->fetch_assoc()):
                                     $stateClass = $podcasts['state'] === 'Activo' ? 'state-active' : ($podcasts['state'] === 'Inactivo' ? 'state-inactive' : 'state-finished');
+
+                                    // Lógica de herencia: Si el podcast no tiene imagen propia, usa la imagen del canal
+                                    $imagen_a_mostrar = !empty($podcasts['image']) ? $podcasts['image'] : $podcasts['channel_image'];
                             ?>
                                     <tr>
                                         <td class="fw-semibold text-muted"><?= $podcasts['id']; ?></td>
                                         <td>
-                                            <?php if (!empty($podcasts['image'])): ?>
-                                                <img src="<?= htmlspecialchars($podcasts['image']); ?>" alt="Logo" class="img-thumb-preview rounded">
+                                            <?php if (!empty($imagen_a_mostrar)): ?>
+                                                <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>" alt="Logo" class="img-thumb-preview rounded">
                                             <?php else: ?>
                                                 <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
                                                     <i class="fas fa-image"></i>
@@ -369,6 +382,15 @@ $section = $_GET['section'] ?? $podcast;
                                             <a href="<?= htmlspecialchars($podcasts['description']); ?>" target="_blank" class="fw-semibold text-dark text-decoration-none">
                                                 <?= htmlspecialchars($podcasts['title']); ?>
                                             </a>
+                                        </td>
+                                        <td>
+                                            <?php if (!empty($podcasts['frequency'])): ?>
+                                                <span class="badge bg-secondary bg-opacity-10 text-secondary border px-2 py-1">
+                                                    <i class="fas fa-clock me-1"></i> <?= htmlspecialchars($podcasts['frequency']); ?>
+                                                </span>
+                                            <?php else: ?>
+                                                <span class="text-muted small">N/D</span>
+                                            <?php endif; ?>
                                         </td>
                                         <td>
                                             <span class="badge bg-light text-dark border">
@@ -409,7 +431,7 @@ $section = $_GET['section'] ?? $podcast;
                                 <?php endwhile; ?>
                             <?php else: ?>
                                 <tr>
-                                    <td colspan="7" class="text-center py-4">
+                                    <td colspan="8" class="text-center py-4">
                                         <div class="empty-state">
                                             <i class="fas fa-podcast fa-2x mb-2 text-muted"></i>
                                             <h5>Sin Podcasts aún</h5>
@@ -445,22 +467,25 @@ $section = $_GET['section'] ?? $podcast;
                         </thead>
                         <tbody>
                             <?php
-                            // Consulta para listar todas las temporadas (tanto activas/nuevas como antiguas)
-                            $sql = "SELECT s.*, p.title as podcast_title, p.image as podcast_image,
+                            // Consulta para listar todas las temporadas trayendo la imagen del podcast y la heredada del canal
+                            $sql = "SELECT s.*, p.title as podcast_title, p.image as podcast_image, c.image as channel_image,
                                    (SELECT COUNT(*) FROM episodes e WHERE e.season_id = s.id) as total_episodios
                             FROM seasons s 
                             JOIN podcasts p ON s.podcast_id = p.id 
+                            LEFT JOIN channels c ON p.channel_id = c.id
                             ORDER BY p.title, s.number DESC";
 
                             $result = $conn->query($sql);
                             if ($result && $result->num_rows > 0):
                                 while ($season = $result->fetch_assoc()):
+                                    // Lógica de herencia: Prioriza la imagen del podcast; si está vacía, usa la del canal
+                                    $imagen_a_mostrar = !empty($season['podcast_image']) ? $season['podcast_image'] : $season['channel_image'];
                             ?>
                                     <tr>
                                         <td class="fw-semibold text-muted"><?= $season['id']; ?></td>
                                         <td>
-                                            <?php if (!empty($season['podcast_image'])): ?>
-                                                <img src="<?= htmlspecialchars($season['podcast_image']); ?>" alt="Logo" class="img-thumb-preview rounded">
+                                            <?php if (!empty($imagen_a_mostrar)): ?>
+                                                <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>" alt="Logo" class="img-thumb-preview rounded">
                                             <?php else: ?>
                                                 <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
                                                     <i class="fas fa-image"></i>
@@ -507,10 +532,11 @@ $section = $_GET['section'] ?? $podcast;
                 <!-- VISTA DE EPISODIOS CON FILTRO Y CAMBIO DE VISTA -->
             <?php elseif ($section == $episodios): ?>
                 <?php
-                $result = $conn->query("SELECT e.*, s.number as season_number, p.title as podcast_title 
+                $result = $conn->query("SELECT e.*, s.number as season_number, p.title as podcast_title, c.name as channel_name 
                         FROM episodes e 
                         JOIN seasons s ON e.season_id = s.id 
                         JOIN podcasts p ON s.podcast_id = p.id 
+                        LEFT JOIN channels c ON p.channel_id = c.id
                         ORDER BY 
                             CASE 
                                 WHEN e.status = 'PENDING' THEN 1
@@ -518,7 +544,6 @@ $section = $_GET['section'] ?? $podcast;
                                 ELSE 3
                             END ASC, 
                             e.publish_date DESC");
-
                 $episodes_list = [];
                 if ($result && $result->num_rows > 0) {
                     while ($row = $result->fetch_assoc()) {
@@ -603,12 +628,27 @@ $section = $_GET['section'] ?? $podcast;
                                             <?php endif; ?>
                                         </div>
 
-                                        <div class="episode-podcast-info">
-                                            <i class="fas fa-podcast text-primary"></i>
-                                            <span class="text-truncate" style="max-width: 180px;">
-                                                <?= htmlspecialchars($episode['podcast_title']); ?>
+                                        <div class="episode-podcast-info d-flex align-items-center gap-1 flex-wrap small text-muted">
+                                            <?php
+                                            // Normalizamos los textos para comparar sin importar tildes o mayúsculas/minúsculas extra
+                                            $canal_limpio = trim(mb_strtolower($episode['channel_name'] ?? ''));
+                                            $podcast_limpio = trim(mb_strtolower($episode['podcast_title'] ?? ''));
+
+                                            // Si el canal existe y es distinto al podcast, lo mostramos primero
+                                            if (!empty($canal_limpio) && $canal_limpio !== $podcast_limpio):
+                                            ?>
+                                                <span class="fw-semibold">
+                                                    <i class="fas fa-tv me-1"></i><?= htmlspecialchars($episode['channel_name']); ?>
+                                                </span>
+                                                <span>•</span>
+                                            <?php endif; ?>
+
+                                            <!-- Podcast -->
+                                            <span class="text-dark fw-medium">
+                                                <i class="fas fa-podcast text-primary"></i> <?= htmlspecialchars($episode['podcast_title']); ?>
                                             </span>
-                                            <span class="text-muted">•</span>
+                                            <span>•</span>
+                                            <!-- Temporada -->
                                             <span class="badge bg-light text-dark border">
                                                 Temporada <?= $episode['season_number']; ?>
                                             </span>
@@ -658,8 +698,26 @@ $section = $_GET['section'] ?? $podcast;
                                         </td>
                                         <td class="fw-semibold text-dark"><?= htmlspecialchars($episode['title']); ?></td>
                                         <td>
-                                            <span class="fw-medium"><?= htmlspecialchars($episode['podcast_title']); ?></span>
-                                            <span class="badge bg-light text-dark border ms-1">T<?= $episode['season_number']; ?></span>
+                                            <div class="d-flex align-items-center gap-1 flex-wrap small">
+                                                <?php
+                                                $canal_limpio = trim(mb_strtolower($episode['channel_name'] ?? ''));
+                                                $podcast_limpio = trim(mb_strtolower($episode['podcast_title'] ?? ''));
+
+                                                if (!empty($canal_limpio) && $canal_limpio !== $podcast_limpio):
+                                                ?>
+                                                    <span class="text-muted fw-semibold">
+                                                        <i class="fas fa-tv me-1"></i><?= htmlspecialchars($episode['channel_name']); ?>
+                                                    </span>
+                                                    <span class="text-muted">•</span>
+                                                <?php endif; ?>
+
+                                                <span class="fw-medium text-dark">
+                                                    <i class="fas fa-podcast text-primary"></i> <?= htmlspecialchars($episode['podcast_title']); ?>
+                                                </span>
+                                                <span class="badge bg-light text-dark border">
+                                                    T<?= $episode['season_number']; ?>
+                                                </span>
+                                            </div>
                                         </td>
                                         <td><span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill">Cap. <?= $episode['number']; ?></span></td>
                                         <td class="small text-muted"><?= date('d/m/Y H:i', strtotime($episode['publish_date'])); ?></td>
@@ -720,9 +778,11 @@ $section = $_GET['section'] ?? $podcast;
                 // ==========================================
                 // FUNCIÓN PARA MÚLTIPLES HORARIOS SEMANALES
                 // ==========================================
+
                 function actualizarHorariosAutomaticos($conn)
                 {
-                    $podcastsResult = $conn->query("SELECT id FROM podcasts");
+                    // 1. Omitir podcasts con estado 'Finalizado'
+                    $podcastsResult = $conn->query("SELECT id FROM podcasts WHERE state != 'Finalizado'");
                     if (!$podcastsResult) return;
 
                     $dias_map_es = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
@@ -730,67 +790,103 @@ $section = $_GET['section'] ?? $podcast;
                     while ($pod = $podcastsResult->fetch_assoc()) {
                         $podcastId = $pod['id'];
 
-                        // 1. Obtener los últimos 20 episodios
-                        $stmt = $conn->prepare("SELECT publish_date FROM episodes WHERE podcast_id = ? ORDER BY publish_date DESC LIMIT 20");
+                        // Obtener los últimos 20 episodios ordenados por fecha ASCENDENTE para calcular la frecuencia de publicación
+                        $stmt = $conn->prepare("SELECT publish_date FROM episodes WHERE podcast_id = ? ORDER BY publish_date ASC LIMIT 20");
                         $stmt->bind_param("i", $podcastId);
                         $stmt->execute();
                         $result = $stmt->get_result();
 
                         $episodios = [];
+                        $timestamps_desc = [];
                         while ($row = $result->fetch_assoc()) {
-                            $episodios[] = strtotime($row['publish_date']);
+                            $ts = strtotime($row['publish_date']);
+                            $episodios[] = $ts;
+                            $timestamps_desc[] = $ts; // Guardamos copia para los horarios
                         }
 
                         if (count($episodios) < 3) continue;
 
-                        // 2. Agrupar por Día y REDONDEAR a la hora en punto (ej: 17:13 y 17:16 pasan a ser las 17:00)
+                        // --- CALCULAR FRECUENCIA AUTOMÁTICA ---
+                        $diferencias = [];
+                        for ($i = 1; $i < count($episodios); $i++) {
+                            $diff_dias = ($episodios[$i] - $episodios[$i - 1]) / 86400; // Pasamos segundos a días
+                            if ($diff_dias > 0) {
+                                $diferencias[] = $diff_dias;
+                            }
+                        }
+
+                        $frecuencia = 'Desconocida';
+                        if (!empty($diferencias)) {
+                            $promedio_dias = array_sum($diferencias) / count($diferencias);
+
+                            if ($promedio_dias <= 1.5) {
+                                $frecuencia = 'Diario';
+                            } elseif ($promedio_dias <= 9) {
+                                $frecuencia = 'Semanal';
+                            } elseif ($promedio_dias <= 20) {
+                                $frecuencia = 'Quincenal';
+                            } elseif ($promedio_dias <= 45) {
+                                $frecuencia = 'Mensual';
+                            } else {
+                                $frecuencia = 'Esporádico / Semestral';
+                            }
+                        }
+
+                        // Opcional: Si deseas guardar la frecuencia detectada en tu tabla podcasts, 
+                        // asegúrate de tener una columna 'frequency' (VARCHAR) y descomenta las siguientes líneas:
+
+                        $stmtFreq = $conn->prepare("UPDATE podcasts SET frequency = ? WHERE id = ?");
+                        $stmtFreq->bind_param("si", $frecuencia, $podcastId);
+                        $stmtFreq->execute();
+                        $stmtFreq->close();
+
+
+                        // --- CALCULAR PATRONES DE HORARIOS ---
+                        rsort($timestamps_desc); // Orden descendente para priorizar los episodios más recientes
                         $patrones = [];
-                        foreach ($episodios as $timestamp) {
+                        foreach ($timestamps_desc as $timestamp) {
                             $diaSemana = $dias_map_es[date('w', $timestamp)];
-                            $horaRedondeada = date('H:00:00', $timestamp); // Agrupa por hora exacta
+                            $horaRedondeada = date('H:00:00', $timestamp);
 
                             $key = $diaSemana . '_' . $horaRedondeada;
                             if (!isset($patrones[$key])) {
                                 $patrones[$key] = [
                                     'day' => $diaSemana,
-                                    'time' => date('H:i:s', $timestamp), // Mantiene la hora exacta promedio o del primero
+                                    'time' => date('H:i:s', $timestamp),
                                     'count' => 0
                                 ];
                             }
                             $patrones[$key]['count']++;
                         }
 
-                        // Ordenar los patrones por los que más se repiten
                         usort($patrones, function ($a, $b) {
                             return $b['count'] - $a['count'];
                         });
 
-                        // 3. Filtrar para evitar que un mismo podcast aparezca 2 veces EL MISMO DÍA.
-                        // Nos quedaremos con el mejor horario por cada día de la semana detectado.
                         $diasRegistrados = [];
                         $horariosValidos = [];
 
                         foreach ($patrones as $p) {
                             $dia = $p['day'];
-                            // Si este día ya tiene un horario asignado para este podcast, lo ignoramos para evitar duplicados en el mismo día
                             if (!isset($diasRegistrados[$dia])) {
                                 $diasRegistrados[$dia] = true;
                                 $horariosValidos[] = $p;
                             }
                         }
 
-                        // 4. Limpiar los horarios viejos de este podcast y guardar los limpios y filtrados
+                        // Limpiar horarios viejos y guardar los nuevos filtrados
                         if (!empty($horariosValidos)) {
                             $stmtDel = $conn->prepare("DELETE FROM schedule WHERE podcast_id = ?");
                             $stmtDel->bind_param("i", $podcastId);
                             $stmtDel->execute();
+                            $stmtDel->close();
 
                             $stmtIns = $conn->prepare("INSERT INTO schedule (podcast_id, day_of_week, start_time) VALUES (?, ?, ?)");
                             foreach ($horariosValidos as $h) {
-                                // Opcional: si quieres mostrar la hora exacta del último o la redondeada, puedes usar $h['time'] o la redondeada
                                 $stmtIns->bind_param("iss", $podcastId, $h['day'], $h['time']);
                                 $stmtIns->execute();
                             }
+                            $stmtIns->close();
                         }
                     }
                 }
@@ -799,15 +895,12 @@ $section = $_GET['section'] ?? $podcast;
                 actualizarHorariosAutomaticos($conn);
             ?>
 
-                <!-- ========================================== -->
-                <!-- 2. TU VISTA HTML DEL HORARIO SEMANAL       -->
-                <!-- ========================================== -->
                 <div class="row g-3">
                     <?php
                     $dias_map = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
                     $dia_actual = $dias_map[date('w')];
 
-                    // Consulta que lee los horarios ya actualizados y calcula el próximo capítulo
+                    // Consulta del calendario filtrando para excluir podcasts finalizados
                     $scheduleQuery = "
         SELECT s.id AS schedule_id, s.day_of_week, s.start_time, p.id AS podcast_id, p.title, p.image,
                COALESCE(MAX(e.number) + 1, 1) AS episodio
@@ -815,6 +908,7 @@ $section = $_GET['section'] ?? $podcast;
         JOIN podcasts p ON s.podcast_id = p.id
         LEFT JOIN seasons sn ON sn.podcast_id = p.id
         LEFT JOIN episodes e ON e.season_id = sn.id
+        WHERE p.state != 'Finalizado'
         GROUP BY s.id
         ORDER BY FIELD(s.day_of_week, 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'), s.start_time;";
 
@@ -848,7 +942,7 @@ $section = $_GET['section'] ?? $podcast;
                                                 <?php if (!empty($item['image'])): ?>
                                                     <img src="<?= htmlspecialchars($item['image']); ?>" class="img-thumb-preview" style="width: 50px; height: 50px;">
                                                 <?php else: ?>
-                                                    <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-text text-muted bg-light">
+                                                    <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted">
                                                         <i class="fas fa-podcast"></i>
                                                     </div>
                                                 <?php endif; ?>

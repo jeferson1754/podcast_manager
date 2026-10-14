@@ -6,53 +6,75 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($conn->connect_error) {
         die('Connection Error');
     }
-    if ($type ==$podcast) {
-        $title =$_POST['title'];
-        $image =$_POST['image'];
-        $link =$_POST['link'];
-        $state =$_POST['state'];
-        $stmt =$conn->prepare("INSERT INTO podcasts (title, image, description, state) VALUES (?, ?, ?, ?)");
-        $stmt->bind_param("ssss", $title,$image, $link,$state);
-        $stmt->execute();$stmt->close();
-    } elseif ($type == $temporadas) {$podcast_id = $_POST['podcast_id'];$number = $_POST['number'];$title = $_POST['title'] ?? ('Temporada ' .$number);
+    if ($type == $podcast) {
+        $channel_id = $_POST['channel_id']; // Nuevo campo de canal
+        $title = $_POST['title'];
+        $image = $_POST['image'];
+        $link = $_POST['link'];
+        $state = $_POST['state'];
 
-        $stmt =$conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? AND number = ?");
-        $stmt->bind_param("ii", $podcast_id, $number);$stmt->execute();
-        $result =$stmt->get_result();
+        // Insertamos el podcast vinculado al channel_id
+        $stmt = $conn->prepare("INSERT INTO podcasts (channel_id, title, image, description, state) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param("issss", $channel_id, $title, $image, $link, $state);
+        $stmt->execute();
+        $stmt->close();
+    } elseif ($type == $temporadas) {
+        $podcast_id = $_POST['podcast_id'];
+        $number = $_POST['number'];
+        $title = $_POST['title'] ?? ('Temporada ' . $number);
 
-        if ($result->num_rows > 0) {$row = $result->fetch_assoc();$season_id = $row['id'];$stmt->close();
+        $stmt = $conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? AND number = ?");
+        $stmt->bind_param("ii", $podcast_id, $number);
+        $stmt->execute();
+        $result = $stmt->get_result();
 
-            $stmtUpdate =$conn->prepare("UPDATE seasons SET title = ? WHERE id = ?");
-            $stmtUpdate->bind_param("si", $title,$season_id);
-            $stmtUpdate->execute();$stmtUpdate->close();
+        if ($result->num_rows > 0) {
+            $row = $result->fetch_assoc();
+            $season_id = $row['id'];
+            $stmt->close();
+
+            $stmtUpdate = $conn->prepare("UPDATE seasons SET title = ? WHERE id = ?");
+            $stmtUpdate->bind_param("si", $title, $season_id);
+            $stmtUpdate->execute();
+            $stmtUpdate->close();
         } else {
             $stmt->close();
 
-            $stmtInsert =$conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)");
-            $stmtInsert->bind_param("iis", $podcast_id, $number,$title);
-            $stmtInsert->execute();$stmtInsert->close();
+            $stmtInsert = $conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)");
+            $stmtInsert->bind_param("iis", $podcast_id, $number, $title);
+            $stmtInsert->execute();
+            $stmtInsert->close();
         }
-    } elseif ($type == $episodios) {$season_id = $_POST['season_id'];$number = $_POST['number'];$title = $_POST['title'];$duration = $_POST['duration'];$publish_date = $_POST['publish_date'];$youtube_link = trim($_POST['youtube_link'] ?? '');$youtube_id = null;
+    } elseif ($type == $episodios) {
+        $season_id = $_POST['season_id'];
+        $number = $_POST['number'];
+        $title = $_POST['title'];
+        $duration = $_POST['duration'];
+        $publish_date = $_POST['publish_date'];
+        $youtube_link = trim($_POST['youtube_link'] ?? '');
+        $youtube_id = null;
         if (!empty($youtube_link)) {
-            if (preg_match('/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i', $youtube_link,$match)) {
-                $youtube_id =$match[1];
+            if (preg_match('/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i', $youtube_link, $match)) {
+                $youtube_id = $match[1];
             }
         }
 
-        $stmt =$conn->prepare("INSERT INTO episodes (season_id, number, title, duration, publish_date, youtube_id) VALUES (?, ?, ?, ?, ?, ?)");
-        $stmt->bind_param("iissss", $season_id,$number, $title,$duration, $publish_date,$youtube_id);
-        $stmt->execute();$stmt->close();
-    } elseif ($type ==$calendario) {
-        $podcast_id =$_POST['schedule_id'];
-        $number =$_POST['start_time'];
-        $duration =$_POST['day'];
-        $stmt =$conn->prepare("INSERT INTO `schedule`( `day_of_week`, `start_time`, `podcast_id`) VALUES (?, ?, ?)");
-        $stmt->bind_param("ssi", $duration, $number,$podcast_id);
-        $stmt->execute();$stmt->close();
+        $stmt = $conn->prepare("INSERT INTO episodes (season_id, number, title, duration, publish_date, youtube_id) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("iissss", $season_id, $number, $title, $duration, $publish_date, $youtube_id);
+        $stmt->execute();
+        $stmt->close();
+    } elseif ($type == $calendario) {
+        $podcast_id = $_POST['schedule_id'];
+        $number = $_POST['start_time'];
+        $duration = $_POST['day'];
+        $stmt = $conn->prepare("INSERT INTO `schedule`( `day_of_week`, `start_time`, `podcast_id`) VALUES (?, ?, ?)");
+        $stmt->bind_param("ssi", $duration, $number, $podcast_id);
+        $stmt->execute();
+        $stmt->close();
     }
     header('Location: index.php?section=' . $type);
     exit;
-} 
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -69,17 +91,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="container mt-5 mb-5">
         <h2>Agregar Nuevos <?php echo ucfirst($type); ?></h2>
         <form action="" method="post">
-            <?php if ($type ==$podcast): ?>
+            <?php if ($type == $podcast): // Consultamos los canales existentes para mostrarlos en el selector
+                $channels_result = $conn2->query("SELECT id, name FROM channels ORDER BY name ASC");
+            ?>
                 <div class="mb-3">
-                    <label class="form-label">Titulo</label>
+                    <label class="form-label">Canal de YouTube / Cuenta</label>
+                    <select class="form-select" name="channel_id" required>
+                        <option value="" disabled selected>Selecciona el canal al que pertenece</option>
+                        <?php while ($channel = $channels_result->fetch_assoc()): ?>
+                            <option value="<?php echo $channel['id']; ?>">
+                                <?php echo htmlspecialchars($channel['name']); ?>
+                            </option>
+                        <?php endwhile; ?>
+                    </select>
+                    <div class="form-text">Si el canal no aparece, asegúrate de registrarlo previamente.</div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Título del Podcast (Serie)</label>
                     <input type="text" class="form-control" name="title" required>
                 </div>
-                <div class="mb-3"> <label class="form-label">Imagen (Link)</label>
+
+                <div class="mb-3">
+                    <label class="form-label">Imagen (Link)</label>
                     <input type="text" class="form-control" name="image" required>
                 </div>
-                <div class="mb-3"> <label class="form-label">Link de Youtube</label>
+
+                <div class="mb-3">
+                    <label class="form-label">Link de YouTube / Keywords de Enrutamiento</label>
                     <input type="text" class="form-control" name="link" required>
                 </div>
+
                 <div class="mb-3">
                     <label class="form-label">Estado</label>
                     <select class="form-select" name="state" required>
@@ -88,14 +130,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <option value="Finalizado">Finalizado</option>
                     </select>
                 </div>
-            <?php elseif ($type ==$temporadas): 
-                $result =$conn2->query("SELECT podcasts.id, podcasts.title, COALESCE(MAX(seasons.number), 0) + 1 AS number FROM podcasts LEFT JOIN seasons ON seasons.podcast_id = podcasts.id GROUP BY podcasts.id, podcasts.title;");
+            <?php elseif ($type == $temporadas):
+                $result = $conn2->query("SELECT podcasts.id, podcasts.title, COALESCE(MAX(seasons.number), 0) + 1 AS number FROM podcasts LEFT JOIN seasons ON seasons.podcast_id = podcasts.id GROUP BY podcasts.id, podcasts.title;");
             ?>
                 <div class="mb-3">
                     <label class="form-label">Podcast</label>
                     <select class="form-select" name="podcast_id" id="podcastSelect" required onchange="actualizarTemporada()">
                         <option value="" disabled selected>Selecciona un podcast</option>
-                        <?php while ($pod =$result->fetch_assoc()): ?>
+                        <?php while ($pod = $result->fetch_assoc()): ?>
                             <option value="<?php echo $pod['id']; ?>" data-number="<?php echo $pod['number']; ?>">
                                 <?php echo htmlspecialchars($pod['title']); ?>
                             </option>
@@ -115,8 +157,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 </script>
 
-            <?php elseif ($type ==$episodios): 
-                $result =$conn2->query("
+            <?php elseif ($type == $episodios):
+                $result = $conn2->query("
                 SELECT 
                     s.id AS season_id,
                     p.id AS podcast_id,
@@ -150,11 +192,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <label class="form-label">Temporada</label>
                     <select class="form-select" name="season_id" id="seasonSelect" required onchange="actualizarCapitulo()">
                         <option value="" disabled selected>Selecciona una temporada</option>
-                        <?php while ($season =$result->fetch_assoc()): ?>
+                        <?php while ($season = $result->fetch_assoc()): ?>
                             <option
                                 value="<?php echo $season['season_id']; ?>"
                                 data-capitulo="<?php echo $season['capitulo']; ?>">
-                                <?php echo htmlspecialchars($season['title']) . ' - Temporada ' .$season['temporada']; ?>
+                                <?php echo htmlspecialchars($season['title']) . ' - Temporada ' . $season['temporada']; ?>
                             </option>
                         <?php endwhile; ?>
                     </select>
@@ -187,7 +229,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="mb-3">
                     <label class="form-label">Fecha de Publicación</label>
-                    <input type="datetime-local" class="form-control" id="publishDateInput" name="publish_date" value="<?= $fecha_hoy . ' ' .$hora_actual; ?>" required>
+                    <input type="datetime-local" class="form-control" id="publishDateInput" name="publish_date" value="<?= $fecha_hoy . ' ' . $hora_actual; ?>" required>
                 </div>
 
                 <!-- Script JS para consultar get_video_info.php -->
