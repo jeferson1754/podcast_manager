@@ -325,11 +325,12 @@ $section = $_GET['section'] ?? $podcast;
                             <i class="fas fa-tv"></i> <span>Gestionar Canales</span>
                         </a>
                     <?php endif; ?>
-
-                    <!-- Botón original de Nuevo elemento -->
-                    <a href="add.php?type=<?= urlencode($section); ?>" class="btn btn-primary d-inline-flex align-items-center gap-2">
-                        <i class="fas fa-plus"></i> <span>Nuevo <?= htmlspecialchars($section); ?></span>
-                    </a>
+                    <?php if ($section !== $calendario): ?>
+                        <!-- Botón original de Nuevo elemento -->
+                        <a href="add.php?type=<?= urlencode($section); ?>" class="btn btn-primary d-inline-flex align-items-center gap-2">
+                            <i class="fas fa-plus"></i> <span>Nuevo <?= htmlspecialchars($section); ?></span>
+                        </a>
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -778,19 +779,45 @@ $section = $_GET['section'] ?? $podcast;
                 // ==========================================
                 // FUNCIÓN PARA MÚLTIPLES HORARIOS SEMANALES
                 // ==========================================
-
                 function actualizarHorariosAutomaticos($conn)
                 {
-                    // 1. Omitir podcasts con estado 'Finalizado'
-                    $podcastsResult = $conn->query("SELECT id FROM podcasts WHERE state != 'Finalizado'");
+                    // Obtenemos los podcasts activos y su campo de horarios manuales personalizados
+                    $podcastsResult = $conn->query("SELECT id, schedule_custom FROM podcasts WHERE state != 'Finalizado'");
                     if (!$podcastsResult) return;
 
                     $dias_map_es = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
 
                     while ($pod = $podcastsResult->fetch_assoc()) {
                         $podcastId = $pod['id'];
+                        $scheduleCustom = trim($pod['schedule_custom'] ?? '');
 
-                        // Obtener los últimos 20 episodios ordenados por fecha ASCENDENTE para calcular la frecuencia de publicación
+                        // Limpiamos los horarios previos de este podcast en la tabla schedule
+                        $stmtDel = $conn->prepare("DELETE FROM schedule WHERE podcast_id = ?");
+                        $stmtDel->bind_param("i", $podcastId);
+                        $stmtDel->execute();
+                        $stmtDel->close();
+
+                        // CASO 1: TIENE HORARIO FIJO MANUAL DEFINIDO POR TI
+                        if (!empty($scheduleCustom)) {
+                            // Ejemplo de formato esperado en $scheduleCustom: "Martes:12:00,Jueves:12:00"
+                            $bloques = explode(',', $scheduleCustom);
+                            $stmtIns = $conn->prepare("INSERT INTO schedule (podcast_id, day_of_week, start_time, is_manual) VALUES (?, ?, ?, 1)");
+
+                            foreach ($bloques as $bloque) {
+                                list($dia, $hora) = explode(':', $bloque); // Separa "Martes" y "12:00"
+                                $dia = trim($dia);
+                                $hora = trim($hora) . ':00'; // Asegura formato HH:MM:SS
+
+                                $stmtIns->bind_param("iss", $podcastId, $dia, $hora);
+                                $stmtIns->execute();
+                            }
+                            $stmtIns->close();
+
+                            // Como ya pusimos tu horario fijo, pasamos al siguiente podcast sin calcular nada
+                            continue;
+                        }
+
+                        // CASO 2: NO TIENE HORARIO FIJO, ASÍ QUE EL SCRIPT LO CALCULA AUTOMÁTICAMENTE
                         $stmt = $conn->prepare("SELECT publish_date FROM episodes WHERE podcast_id = ? ORDER BY publish_date ASC LIMIT 20");
                         $stmt->bind_param("i", $podcastId);
                         $stmt->execute();
@@ -801,60 +828,21 @@ $section = $_GET['section'] ?? $podcast;
                         while ($row = $result->fetch_assoc()) {
                             $ts = strtotime($row['publish_date']);
                             $episodios[] = $ts;
-                            $timestamps_desc[] = $ts; // Guardamos copia para los horarios
+                            $timestamps_desc[] = $ts;
                         }
 
                         if (count($episodios) < 3) continue;
 
-                        // --- CALCULAR FRECUENCIA AUTOMÁTICA ---
-                        $diferencias = [];
-                        for ($i = 1; $i < count($episodios); $i++) {
-                            $diff_dias = ($episodios[$i] - $episodios[$i - 1]) / 86400; // Pasamos segundos a días
-                            if ($diff_dias > 0) {
-                                $diferencias[] = $diff_dias;
-                            }
-                        }
-
-                        $frecuencia = 'Desconocida';
-                        if (!empty($diferencias)) {
-                            $promedio_dias = array_sum($diferencias) / count($diferencias);
-
-                            if ($promedio_dias <= 1.5) {
-                                $frecuencia = 'Diario';
-                            } elseif ($promedio_dias <= 9) {
-                                $frecuencia = 'Semanal';
-                            } elseif ($promedio_dias <= 20) {
-                                $frecuencia = 'Quincenal';
-                            } elseif ($promedio_dias <= 45) {
-                                $frecuencia = 'Mensual';
-                            } else {
-                                $frecuencia = 'Esporádico / Semestral';
-                            }
-                        }
-
-                        // Opcional: Si deseas guardar la frecuencia detectada en tu tabla podcasts, 
-                        // asegúrate de tener una columna 'frequency' (VARCHAR) y descomenta las siguientes líneas:
-
-                        $stmtFreq = $conn->prepare("UPDATE podcasts SET frequency = ? WHERE id = ?");
-                        $stmtFreq->bind_param("si", $frecuencia, $podcastId);
-                        $stmtFreq->execute();
-                        $stmtFreq->close();
-
-
-                        // --- CALCULAR PATRONES DE HORARIOS ---
-                        rsort($timestamps_desc); // Orden descendente para priorizar los episodios más recientes
+                        // Cálculo automático de patrones por frecuencia y repetición
+                        rsort($timestamps_desc);
                         $patrones = [];
                         foreach ($timestamps_desc as $timestamp) {
                             $diaSemana = $dias_map_es[date('w', $timestamp)];
                             $horaRedondeada = date('H:00:00', $timestamp);
-
                             $key = $diaSemana . '_' . $horaRedondeada;
+
                             if (!isset($patrones[$key])) {
-                                $patrones[$key] = [
-                                    'day' => $diaSemana,
-                                    'time' => date('H:i:s', $timestamp),
-                                    'count' => 0
-                                ];
+                                $patrones[$key] = ['day' => $diaSemana, 'time' => date('H:i:s', $timestamp), 'count' => 0];
                             }
                             $patrones[$key]['count']++;
                         }
@@ -865,23 +853,16 @@ $section = $_GET['section'] ?? $podcast;
 
                         $diasRegistrados = [];
                         $horariosValidos = [];
-
                         foreach ($patrones as $p) {
-                            $dia = $p['day'];
-                            if (!isset($diasRegistrados[$dia])) {
-                                $diasRegistrados[$dia] = true;
+                            // Si quieres permitir múltiples días calculados, puedes ajustar esta condición
+                            if (!isset($diasRegistrados[$p['day']])) {
+                                $diasRegistrados[$p['day']] = true;
                                 $horariosValidos[] = $p;
                             }
                         }
 
-                        // Limpiar horarios viejos y guardar los nuevos filtrados
                         if (!empty($horariosValidos)) {
-                            $stmtDel = $conn->prepare("DELETE FROM schedule WHERE podcast_id = ?");
-                            $stmtDel->bind_param("i", $podcastId);
-                            $stmtDel->execute();
-                            $stmtDel->close();
-
-                            $stmtIns = $conn->prepare("INSERT INTO schedule (podcast_id, day_of_week, start_time) VALUES (?, ?, ?)");
+                            $stmtIns = $conn->prepare("INSERT INTO schedule (podcast_id, day_of_week, start_time, is_manual) VALUES (?, ?, ?, 0)");
                             foreach ($horariosValidos as $h) {
                                 $stmtIns->bind_param("iss", $podcastId, $h['day'], $h['time']);
                                 $stmtIns->execute();
@@ -890,7 +871,6 @@ $section = $_GET['section'] ?? $podcast;
                         }
                     }
                 }
-
                 // Ejecutar al cargar la página
                 actualizarHorariosAutomaticos($conn);
             ?>
@@ -900,29 +880,73 @@ $section = $_GET['section'] ?? $podcast;
                     $dias_map = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
                     $dia_actual = $dias_map[date('w')];
 
-                    // Consulta del calendario filtrando para excluir podcasts finalizados
-                    $scheduleQuery = "
-        SELECT s.id AS schedule_id, s.day_of_week, s.start_time, p.id AS podcast_id, p.title, p.image,
-               COALESCE(MAX(e.number) + 1, 1) AS episodio
-        FROM schedule s
-        JOIN podcasts p ON s.podcast_id = p.id
-        LEFT JOIN seasons sn ON sn.podcast_id = p.id
-        LEFT JOIN episodes e ON e.season_id = sn.id
-        WHERE p.state != 'Finalizado'
-        GROUP BY s.id
-        ORDER BY FIELD(s.day_of_week, 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'), s.start_time;";
+                    // Orden de los días de la semana para comparar posiciones
+                    $orden_dias = ['Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'];
+                    $index_hoy = array_search($dia_actual, $orden_dias);
 
-                    $result = $conn->query($scheduleQuery);
-                    $days = ['Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'];
                     $scheduleData = [];
 
-                    if ($result && $result->num_rows > 0) {
-                        while ($item = $result->fetch_assoc()) {
-                            $scheduleData[$item['day_of_week']][] = $item;
+                    foreach ($orden_dias as $index_dia => $day) {
+                        $scheduleData[$day] = [];
+
+                        if ($index_dia < $index_hoy) {
+                            // ==========================================
+                            // 1. DÍAS PASADOS: Solo episodios REALES subidos
+                            // ==========================================
+                            $queryPasados = "
+                SELECT p.id AS podcast_id, p.title, p.image, 
+                       e.number AS episodio, 
+                       TIME(e.publish_date) AS start_time
+                FROM episodes e
+                JOIN seasons sn ON e.season_id = sn.id
+                JOIN podcasts p ON sn.podcast_id = p.id
+                WHERE p.state != 'Finalizado' 
+                  AND DAYNAME(e.publish_date) = 
+                      CASE '$day'
+                          WHEN 'Lunes' THEN 'Monday'
+                          WHEN 'Martes' THEN 'Tuesday'
+                          WHEN 'Miercoles' THEN 'Wednesday'
+                          WHEN 'Jueves' THEN 'Thursday'
+                          WHEN 'Viernes' THEN 'Friday'
+                          WHEN 'Sabado' THEN 'Saturday'
+                          WHEN 'Domingo' THEN 'Sunday'
+                      END
+                  AND e.publish_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                ORDER BY e.publish_date DESC";
+
+                            $resPasados = $conn->query($queryPasados);
+                            if ($resPasados && $resPasados->num_rows > 0) {
+                                while ($item = $resPasados->fetch_assoc()) {
+                                    // Evitar duplicados si hubo más de un episodio el mismo día
+                                    $scheduleData[$day][] = $item;
+                                }
+                            }
+                        } else {
+                            // ===================================================================
+                            // 2. HOY Y DÍAS FUTUROS: Horarios programados (Fijos o calculados en schedule)
+                            // ===================================================================
+                            $queryFuturos = "
+                SELECT s.id AS schedule_id, s.day_of_week, s.start_time, p.id AS podcast_id, p.title, p.image,
+                       COALESCE(MAX(e.number) + 1, 1) AS episodio
+                FROM schedule s
+                JOIN podcasts p ON s.podcast_id = p.id
+                LEFT JOIN seasons sn ON sn.podcast_id = p.id
+                LEFT JOIN episodes e ON e.season_id = sn.id
+                WHERE p.state != 'Finalizado' AND s.day_of_week = '$day'
+                GROUP BY s.id
+                ORDER BY s.start_time;";
+
+                            $resFuturos = $conn->query($queryFuturos);
+                            if ($resFuturos && $resFuturos->num_rows > 0) {
+                                while ($item = $resFuturos->fetch_assoc()) {
+                                    $scheduleData[$day][] = $item;
+                                }
+                            }
                         }
                     }
 
-                    foreach ($days as $day):
+                    // Dibujar las tarjetas para cada día de la semana
+                    foreach ($orden_dias as $day):
                         $isToday = ($day === $dia_actual);
                     ?>
                         <div class="col-md-6 col-lg-3">
@@ -934,7 +958,7 @@ $section = $_GET['section'] ?? $podcast;
                                     <?php endif; ?>
                                 </div>
                                 <div class="card-body p-3">
-                                    <?php if (isset($scheduleData[$day])):
+                                    <?php if (!empty($scheduleData[$day])):
                                         $total = count($scheduleData[$day]);
                                         foreach ($scheduleData[$day] as $index => $item):
                                     ?>

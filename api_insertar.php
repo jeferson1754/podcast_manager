@@ -37,21 +37,32 @@ if ($action === 'obtener_o_crear_podcast') {
 
     $nombreLimpio = mb_strtolower($nombreCanal, 'UTF-8');
 
-    // Buscar si existe
-    $stmt = $pdo->prepare("SELECT id FROM podcasts WHERE LOWER(title) = ?");
+    // 1. Buscar si ya existe el podcast vinculado a ese canal por nombre
+    $stmt = $pdo->prepare("
+        SELECT p.id as podcast_id 
+        FROM channels c 
+        JOIN podcasts p ON p.channel_id = c.id 
+        WHERE LOWER(c.name) = ?
+    ");
     $stmt->execute([$nombreLimpio]);
-    $podcast = $stmt->fetch();
+    $resultado = $stmt->fetch();
 
-    if ($podcast) {
-        echo json_encode(['status' => 'ok', 'podcast_id' => $podcast['id']]);
+    if ($resultado) {
+        echo json_encode(['status' => 'ok', 'podcast_id' => $resultado['podcast_id']]);
         exit;
     }
 
-    // Si no existe, crear podcast y temporada 1
-    $stmtInsert = $pdo->prepare("INSERT INTO podcasts (title, description, image) VALUES (?, ?, ?)");
-    $stmtInsert->execute([$nombreCanal, $channelUrl, $imageUrl]);
+    // 2. Si no existe, crear el Canal primero
+    $stmtInsert = $pdo->prepare("INSERT INTO channels (name, created_at, image) VALUES (?, NOW(), ?)");
+    $stmtInsert->execute([$nombreCanal, $imageUrl]);
+    $id_chanel = $pdo->lastInsertId();
+
+    // 3. Crear el Podcast asociado al canal (con sus 4 placeholders correctos)
+    $stmtPodcast = $pdo->prepare("INSERT INTO podcasts (channel_id, title, description, image) VALUES (?, ?, ?, ?)");
+    $stmtPodcast->execute([$id_chanel, $nombreCanal, $channelUrl, $imageUrl]);
     $podcastId = $pdo->lastInsertId();
 
+    // 4. Crear la Temporada 1 por defecto para ese podcast
     $stmtSeason = $pdo->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, 1, 'Temporada 1')");
     $stmtSeason->execute([$podcastId]);
 
@@ -109,17 +120,24 @@ if ($action === 'guardar_episodio') {
     $publishDate  = $inputData['publish_date'] ?? $_POST['publish_date'] ?? date('Y-m-d H:i:s');
     $channelId    = $inputData['channel_id'] ?? $_POST['channel_id'] ?? '';
     $channelName  = $inputData['channel_name'] ?? $_POST['channel_name'] ?? 'Canal Desconocido';
+    $channelImage = $inputData['channel_image'] ?? $_POST['channel_image'] ?? ''; // <-- Recibiendo la imagen del canal
 
-$podcastId = null;
+    $podcastId = null;
 
-    // 1. Intentar buscar el podcast en la base de datos usando el channel_id de YouTube
+    // 1. Intentar buscar el podcast en la base de datos usando el channel_id o nombre
     if (!empty($channelId)) {
-        $stmtPod = $pdo->prepare("SELECT id FROM podcasts WHERE description LIKE ? LIMIT 1");
-        $stmtPod->execute(['%' . $channelId . '%']);
+        $stmtPod = $pdo->prepare("
+            SELECT p.id as podcast_id 
+            FROM channels c 
+            JOIN podcasts p ON p.channel_id = c.id 
+            WHERE c.id = ? OR LOWER(c.name) LIKE ?
+        ");
+        // Buscamos tanto por ID exacto de canal como por coincidencia en el nombre
+        $stmtPod->execute([$channelId, '%' . mb_strtolower($channelName, 'UTF-8') . '%']);
         $podcast = $stmtPod->fetch();
-        
+
         if ($podcast) {
-            $podcastId = $podcast['id'];
+            $podcastId = $podcast['podcast_id'];
         }
     }
 
@@ -130,22 +148,23 @@ $podcastId = null;
 
     // 🚀 NUEVO: Si aún no existe el podcast pero tenemos el nombre y el ID del canal, ¡lo creamos al vuelo!
     if (!$podcastId && !empty($channelId)) {
-        $nombreCanal = $inputData['channel_name'] ?? 'Podcast Nuevo de YouTube';
+        $nombreCanalToInsert = !empty($channelName) ? $channelName : 'Podcast Nuevo de YouTube';
         $urlCanalPorDefecto = "https://www.youtube.com/channel/" . $channelId;
-        
-        $stmtInsertPod = $pdo->prepare("INSERT INTO podcasts (title, description) VALUES (?, ?)");
-        $stmtInsertPod->execute([$nombreCanal, $urlCanalPorDefecto]);
-        
-        // Recuperamos el ID recién creado
+
+        // Corregido NOW() con paréntesis
+        $stmtInsertChan = $pdo->prepare("INSERT INTO channels (name, created_at, image) VALUES (?, NOW(), ?)");
+        $stmtInsertChan->execute([$nombreCanalToInsert, $channelImage]);
+        $canalId = $pdo->lastInsertId(); // O $pdo->lastInsertId() si tu id de canal es autoincremental
+
+        $stmtInsertPod = $pdo->prepare("INSERT INTO podcasts (channel_id, title, description) VALUES (?, ?, ?)");
+        $stmtInsertPod->execute([$canalId, $nombreCanalToInsert, $urlCanalPorDefecto]);
+
+        // Recuperamos el ID recién creado del podcast
         $podcastId = $pdo->lastInsertId();
-        
+
         $stmtSeason = $pdo->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, 1, 'Temporada 1')");
         $stmtSeason->execute([$podcastId]);
-
-        // Opcional: imprimir o registrar en el log que se creó un podcast nuevo
-        // (Esto lo devolverá en el JSON de respuesta)
     }
-
     // Si de plano no hay canal ni ID y no se pudo crear
     if (!$podcastId) {
         echo json_encode(['status' => 'error', 'message' => 'No se pudo asociar ni crear el podcast para este video']);
@@ -200,6 +219,68 @@ $podcastId = null;
     $stmtInsert->execute([$ytId, $podcastId, $seasonId, $numEpisodio, $titulo, $duracion, $status, $publishDate, $completedAtValue]);
 
     echo json_encode(['status' => 'inserted', 'message' => 'Episodio insertado exitosamente']);
+    exit;
+} elseif ($action === 'actualizar_fecha') {
+    // Si Python los manda como JSON o POST tradicional, los atrapamos de ambas formas:
+    $inputJSON = file_get_contents('php://input');
+    $inputData = json_decode($inputJSON, true);
+
+    $youtube_id = $inputData['youtube_id'] ?? $_POST['youtube_id'] ?? '';
+    $publish_date = $inputData['publish_date'] ?? $_POST['publish_date'] ?? '';
+
+    if (!empty($youtube_id) && !empty($publish_date)) {
+        $stmt = $conn->prepare("UPDATE episodes SET publish_date = ? WHERE youtube_id = ?");
+        $stmt->bind_param("ss", $publish_date, $youtube_id);
+
+        if ($stmt->execute()) {
+            echo json_encode(['status' => 'success', 'message' => 'Actualizado correctamente']);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $stmt->error]);
+        }
+        $stmt->close();
+    } else {
+        echo json_encode(['status' => 'error', 'message' => 'Faltan datos', 'recibido_id' => $youtube_id, 'recibido_fecha' => $publish_date]);
+    }
+    exit;
+} // 1. Obtener la lista de episodios pendientes
+elseif ($action === 'obtener_episodios_pendientes') {
+    $stmt = $conn->prepare("SELECT id, youtube_id FROM episodes WHERE status = 'pending'");
+    $stmt->execute();
+    $result = $stmt->get_result();
+
+    $episodios = [];
+    while ($row = $result->fetch_assoc()) {
+        $episodios[] = $row;
+    }
+    $stmt->close();
+
+    echo json_encode(['status' => 'success', 'episodios' => $episodios]);
+    exit;
+}
+
+// 2. Actualizar el título y la duración del episodio pendiente
+elseif ($action === 'actualizar_pendientes_youtube') {
+    $inputJSON = file_get_contents('php://input');
+    $inputData = json_decode($inputJSON, true);
+
+    $youtube_id = $inputData['youtube_id'] ?? $_POST['youtube_id'] ?? '';
+    $title = $inputData['title'] ?? $_POST['title'] ?? '';
+    $duration = $inputData['duration'] ?? $_POST['duration'] ?? 0;
+
+    if (!empty($youtube_id) && !empty($title)) {
+        // Actualizamos título, duración y opcionalmente podemos cambiar el estado a 'processed' o mantenerlo
+        $stmt = $conn->prepare("UPDATE episodes SET title = ?, duration = ? WHERE youtube_id = ?");
+        $stmt->bind_param("sis", $title, $duration, $youtube_id);
+
+        if ($stmt->execute()) {
+            echo json_encode(['status' => 'success', 'message' => 'Título y duración actualizados']);
+        } else {
+            echo json_encode(['status' => 'error', 'message' => $stmt->error]);
+        }
+        $stmt->close();
+    } else {
+        echo json_encode(['status' => 'error', 'message' => 'Faltan datos obligatorios']);
+    }
     exit;
 }
 

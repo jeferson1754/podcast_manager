@@ -90,6 +90,7 @@ def guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje=""):
     )
     logger.info("=" * 70)
 
+
 def obtener_ultima_temporada_id(cursor, podcast_id):
     """Busca el ID de la temporada más reciente registrada para un podcast específico."""
     cursor.execute(
@@ -192,6 +193,7 @@ def obtener_json_con_selenium(driver, url):
     """
     return driver.execute_async_script(js_code)
 
+
 def obtener_csv_con_reintentos(url, max_intentos=3, espera_base=5):
     """Descarga datos aplicando reintentos automáticos ante fallos de red o timeouts."""
     for intento in range(1, max_intentos + 1):
@@ -199,15 +201,18 @@ def obtener_csv_con_reintentos(url, max_intentos=3, espera_base=5):
             response = requests.get(url, timeout=15)
             response.raise_for_status()
             return response.text  # Si sale bien, retorna el contenido de inmediato
-            
+
         except requests.exceptions.RequestException as e:
             if intento < max_intentos:
-                print(f"[AVISO] Intento {intento}/{max_intentos} falló: {e}. Reintentando en {espera_base}s...")
+                print(
+                    f"[AVISO] Intento {intento}/{max_intentos} falló: {e}. Reintentando en {espera_base}s...")
                 time.sleep(espera_base)
                 # Opcional: puedes duplicar el tiempo de espera en cada fallo (espera_base * 2)
             else:
-                print(f"[ERROR CRÍTICO] Se agotaron los {max_intentos} intentos. No se pudo conectar.")
+                print(
+                    f"[ERROR CRÍTICO] Se agotaron los {max_intentos} intentos. No se pudo conectar.")
                 raise e
+
 
 def enviar_a_php_con_session(driver, php_endpoint, payload):
     """Envía datos por POST usando JavaScript (fetch) directamente dentro
@@ -250,8 +255,73 @@ def enviar_a_php_con_session(driver, php_endpoint, payload):
         return {"status": "error", "message": str(e)}
 
 
+def actualizar_episodios_pendientes(driver, php_endpoint, API_KEY):
+    """Consulta los episodios pendientes en la BD, obtiene su título y duración real de YouTube y los actualiza."""
+    youtube = build("youtube", "v3", developerKey=API_KEY)
+
+    logger.info(
+        "🔧 Iniciando actualización de títulos y duración para episodios pendientes...")
+
+    # 1. Traer solo los episodios pendientes desde PHP
+    res_db = enviar_a_php_con_session(driver, php_endpoint, {
+        'token': TOKEN_SECRET,
+        'action': 'obtener_episodios_pendientes'
+    })
+
+    episodios_db = res_db.get(
+        'episodios', []) if isinstance(res_db, dict) else []
+
+    # Mapeamos para asociar youtube_id con el id interno si lo necesitas
+    if not episodios_db:
+        logger.info(
+            "⚠️ No se encontraron episodios pendientes en la base de datos.")
+        return
+
+    video_ids = [str(ep['youtube_id']).strip()
+                 for ep in episodios_db if ep and ep.get('youtube_id')]
+
+    # 2. Consultar la API de YouTube en bloques de hasta 50 IDs
+    for i in range(0, len(video_ids), 50):
+        batch_ids = video_ids[i:i+50]
+        try:
+            # Pedimos tanto 'snippet' (para el título) como 'contentDetails' (para la duración)
+            vid_request = youtube.videos().list(
+                part="snippet,contentDetails",
+                id=",".join(batch_ids)
+            )
+            vid_response = vid_request.execute()
+
+            for vid_item in vid_response.get("items", []):
+                v_id = vid_item["id"]
+                nuevo_titulo = vid_item["snippet"]["title"]
+                # Viene en formato ISO 8601 (ej: PT1H2M10S)
+                raw_duration = vid_item["contentDetails"]["duration"]
+
+                # Opcional: Puedes convertir la duración ISO a segundos o formato HH:MM:SS si tu BD lo requiere
+                # Asegúrate de tener esta función o guárdala como prefieras
+                duracion_segundos = iso8601_a_hhmmss(raw_duration)
+
+                # Enviamos la orden de actualización a PHP
+                res_update = enviar_a_php_con_session(driver, php_endpoint, {
+                    'token': TOKEN_SECRET,
+                    'action': 'actualizar_pendientes_youtube',
+                    'youtube_id': v_id,
+                    'title': nuevo_titulo,
+                    'duration': duracion_segundos
+                })
+
+                logger.info(
+                    f"✅ Episodio pendiente actualizado ({v_id}) -> Título: {nuevo_titulo}")
+
+        except Exception as e:
+            logger.error(
+                f"⚠️ Error al actualizar lote de pendientes en YouTube: {e}")
+
+    logger.info("🎉 Proceso de actualización de episodios pendientes finalizado.")
+
+
 def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
-    """Extrae videos de una playlist de YouTube usando la API oficial v3."""
+    """Extrae videos de una playlist de YouTube usando la API oficial v3 (Soporte optimizado para VODs y Lives)."""
     youtube = build("youtube", "v3", developerKey=API_KEY)
 
     # 1. Extraer el ID de la playlist si el usuario pasó una URL completa
@@ -266,7 +336,7 @@ def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
     item_map = {}
 
     try:
-        # 2. Obtener los elementos de la playlist (paginación básica o hasta 50 resultados)
+        # 2. Obtener los elementos de la playlist
         request = youtube.playlistItems().list(
             part="snippet",
             playlistId=playlist_id,
@@ -285,17 +355,15 @@ def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
             if vid_id:
                 video_ids.append(vid_id)
 
-                # Procesamiento y conversión de fecha a America/Santiago (Tu lógica validada)
-                publish_date = None
-                # Formato: "2026-10-06T15:30:00Z"
+                # Fallback inicial usando publishedAt de la playlist por si acaso
                 raw_published_at = snippet.get("publishedAt")
+                publish_date = None
 
                 if raw_published_at:
                     try:
                         utc_dt = datetime.strptime(
                             raw_published_at, "%Y-%m-%dT%H:%M:%SZ"
                         ).replace(tzinfo=ZoneInfo("UTC"))
-
                         chile_dt = utc_dt.astimezone(
                             ZoneInfo("America/Santiago"))
                         publish_date = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -314,12 +382,12 @@ def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
                     "publish_date": publish_date
                 }
 
-        # 3. Consultar las duraciones en lote (videos().list acepta hasta 50 IDs separados por comas)
+        # 3. Consultar los detalles en lote (contentDetails y liveStreamingDetails)
         if video_ids:
             for i in range(0, len(video_ids), 50):
                 batch_ids = video_ids[i:i+50]
                 vid_request = youtube.videos().list(
-                    part="contentDetails",
+                    part="contentDetails,liveStreamingDetails",
                     id=",".join(batch_ids)
                 )
                 vid_response = vid_request.execute()
@@ -327,12 +395,35 @@ def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
                 for vid_item in vid_response.get("items", []):
                     v_id = vid_item["id"]
                     if v_id in item_map:
+                        # Extraer duración
                         iso_duration = vid_item.get(
                             "contentDetails", {}).get("duration", "PT0S")
                         item_map[v_id]["duration"] = parsear_duracion_iso(
                             iso_duration)
 
-        # Rellenar con "00:00:00" si a algún video le faltó la duración y armar la lista final
+                        # --- DETECCIÓN INTELIGENTE DE FECHA PARA TRANSMISIONES EN VIVO ---
+                        live_details = vid_item.get("liveStreamingDetails", {})
+                        raw_date = None
+
+                        if "actualEndTime" in live_details:
+                            raw_date = live_details["actualEndTime"]
+                        elif "actualStartTime" in live_details:
+                            raw_date = live_details["actualStartTime"]
+
+                        # Si es un directo finalizado/en curso, recalibramos la fecha de publicación
+                        if raw_date:
+                            try:
+                                utc_dt = datetime.strptime(
+                                    raw_date, "%Y-%m-%dT%H:%M:%SZ"
+                                ).replace(tzinfo=ZoneInfo("UTC"))
+                                chile_dt = utc_dt.astimezone(
+                                    ZoneInfo("America/Santiago"))
+                                item_map[v_id]["publish_date"] = chile_dt.strftime(
+                                    "%Y-%m-%d %H:%M:%S")
+                            except Exception:
+                                pass
+
+        # Rellenar valores por defecto y armar la lista final
         for vid_id in video_ids:
             if vid_id in item_map:
                 if "duration" not in item_map[vid_id]:
@@ -360,7 +451,7 @@ def parsear_duracion_iso(iso_duration):
 
 def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
     """Sincroniza la playlist global de pendientes de forma totalmente independiente,
-    autodectando el canal y podcast de cada video.
+    autodectando el canal y podcast de cada video (Con soporte para VODs y Lives).
     """
     logger.info(f"📋 Sincronizando playlist global de pendientes...")
 
@@ -370,9 +461,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
             "⚠️ ADVERTENCIA: La playlist global está vacía. Omitiendo para evitar falsos positivos.")
         return
 
-    # 1. Obtener TODOS los episodios existentes en la BD (o consultar a PHP un listado global)
-    # Nota: Asegúrate de tener una acción en PHP llamada 'obtener_todos_episodios'
-    # o ajusta esta consulta para que traiga un mapa global de youtube_id -> estado
+    # 1. Obtener TODOS los episodios existentes en la BD
     res_db = enviar_a_php_con_session(driver, php_endpoint, {
         'token': TOKEN_SECRET,
         'action': 'obtener_todos_episodios'
@@ -389,14 +478,22 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
     }
 
     # 2. Procesar cada video de la playlist global
+ # 2. Procesar cada video de la playlist global
     for yt_id, v_info in playlist_ids.items():
         if yt_id not in db_map:
             logger.info(
                 f"  🆕 Nuevo en playlist global (Autodetectando canal): {v_info['title']}")
 
-            publish_date = v_info.get(
-                'publish_date') or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Aseguramos la fecha correcta priorizando el inicio del live si existe en v_info
+            publish_date = (
+                v_info.get('actual_start_time') or
+                v_info.get('publish_date') or
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
 
+            # Extraemos la imagen del canal desde v_info (ajusta la clave según tu extractor de YouTube)
+            channel_image = v_info.get('thumbnails', {}).get(
+                'default', {}).get('url', '')
             # Enviamos a PHP. PHP se encarga de buscar el podcast_id usando el channel_id
             enviar_a_php_con_session(driver, php_endpoint, {
                 'token': TOKEN_SECRET,
@@ -404,13 +501,15 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
                 'youtube_id': yt_id,
                 'channel_id': v_info.get('channel_id', ''),
                 'channel_name': v_info.get('channel_name', ''),
+                'channel_image': channel_image,  # <-- Agregado aquí
                 'title': v_info['title'],
-                'duration': v_info['duration'],
+                'duration': v_info.get('duration', '00:00:00'),
                 'status': 'PENDING',
                 'publish_date': publish_date
             })
         else:
             duracion_actual_db = db_map[yt_id].get('duration', '00:00:00')
+            duracion_nueva = v_info.get('duration', '00:00:00')
 
             # Si ya estaba pero se había completado y volvió a entrar a la playlist
             if db_map[yt_id].get('status') == 'PUBLISHED':
@@ -422,14 +521,14 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
                     'youtube_id': yt_id,
                     'status': 'PENDING'
                 })
-            elif duracion_actual_db == "00:00:00" and v_info['duration'] != "00:00:00":
+            elif duracion_actual_db == "00:00:00" and duracion_nueva != "00:00:00":
                 logger.info(
-                    f"  ⏱️ Actualizando duración para: {v_info['title']} ({v_info['duration']})")
+                    f"  ⏱️ Actualizando duración para: {v_info['title']} ({duracion_nueva})")
                 enviar_a_php_con_session(driver, php_endpoint, {
                     'token': TOKEN_SECRET,
                     'action': 'actualizar_duracion',
                     'youtube_id': yt_id,
-                    'duration': v_info['duration']
+                    'duration': duracion_nueva
                 })
 
     # 3. Marcar como PUBLISHED los que ya salieron de la playlist global
@@ -444,12 +543,90 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
                 'status': 'PUBLISHED'
             })
 
+
+def corregir_fechas_antiguas(driver, php_endpoint, API_KEY):
+    """Consulta todos los episodios en la BD y actualiza su publish_date con actualEndTime si es un directo."""
+    youtube = build("youtube", "v3", developerKey=API_KEY)
+
+    logger.info(
+        "🔧 Iniciando revisión de registros antiguos para corregir fechas de directos...")
+
+    # 1. Traer todos los episodios de la BD
+    res_db = enviar_a_php_con_session(driver, php_endpoint, {
+        'token': TOKEN_SECRET,
+        'action': 'obtener_todos_episodios'
+    })
+
+    episodios_db = res_db.get(
+        'episodios', []) if isinstance(res_db, dict) else []
+    video_ids = [str(ep['youtube_id']).strip()
+                 for ep in episodios_db if ep and ep.get('youtube_id')]
+
+    if not video_ids:
+        logger.info(
+            "⚠️ No se encontraron episodios en la base de datos para corregir.")
+        return
+
+    # 2. Consultar la API de YouTube en bloques de hasta 50 IDs
+    for i in range(0, len(video_ids), 50):
+        batch_ids = video_ids[i:i+50]
+        try:
+            vid_request = youtube.videos().list(
+                part="liveStreamingDetails",
+                id=",".join(batch_ids)
+            )
+            vid_response = vid_request.execute()
+
+            for vid_item in vid_response.get("items", []):
+                v_id = vid_item["id"]
+                live_details = vid_item.get("liveStreamingDetails", {})
+
+                raw_date = None
+
+                if "actualStartTime" in live_details:
+                    raw_date = live_details["actualStartTime"]
+                elif "actualEndTime" in live_details:
+                    raw_date = live_details["actualEndTime"]
+
+                # Si es un directo y tiene fecha real, la actualizamos
+                if raw_date:
+                    try:
+                        utc_dt = datetime.strptime(
+                            raw_date, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=ZoneInfo("UTC"))
+                        chile_dt = utc_dt.astimezone(
+                            ZoneInfo("America/Santiago"))
+                        nueva_fecha = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                        # Enviamos la orden de actualización a PHP
+                        # Enviamos la orden de actualización a PHP
+                        res_update = enviar_a_php_con_session(driver, php_endpoint, {
+                            'token': TOKEN_SECRET,
+                            'action': 'actualizar_fecha',
+                            'youtube_id': v_id,
+                            'publish_date': nueva_fecha
+                        })
+
+                        # Imprime esto para ver qué dice PHP exactamente en la consola
+                        print(f"Respuesta de PHP para {v_id}: {res_update}")
+
+                        logger.info(
+                            f"✅ Fecha histórica corregida para el video {v_id}: {nueva_fecha}")
+                    except Exception as e:
+                        logger.error(
+                            f"⚠️ Error al formatear fecha del video {v_id}: {e}")
+        except Exception as e:
+            logger.error(
+                f"⚠️ Error al consultar el lote de videos en YouTube: {e}")
+
+    logger.info("🎉 Proceso de corrección de fechas históricas finalizado.")
+
 # ------------------------------------------------------------------
 # PROCESO PRINCIPAL
 # ------------------------------------------------------------------
 
 
 def procesar():
+
     inicio = datetime.now(ZoneInfo("America/Santiago"))
     stats = {"podcasts": 0, "episodios": 0, "errores": 0}
     estado = "OK"
@@ -459,6 +636,8 @@ def procesar():
     logger.info("INICIO DE EJECUCIÓN")
     logger.info("🌐 Iniciando navegador Selenium...")
     driver = configurar_navegador(DOWNLOAD_DIR)
+
+    # corregir_fechas_antiguas(driver, PHP_ENDPOINT, API_KEY)
 
     try:
         driver.get("https://www.google.com")
