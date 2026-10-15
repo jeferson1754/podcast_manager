@@ -128,14 +128,14 @@ function ejecutar(mysqli $conn, string $sql, string $tipos, array $params): bool
 function campo(string $label, string $name, string $tipo, array $form, array $errores, string $extra = ''): void
 {
     $invalido = isset($errores[$name]);
-    ?>
+?>
     <div class="mb-3">
         <label class="form-label" for="<?= h($name) ?>"><?= h($label) ?></label>
         <input type="<?= h($tipo) ?>" class="form-control<?= $invalido ? ' is-invalid' : '' ?>"
             id="<?= h($name) ?>" name="<?= h($name) ?>" value="<?= h($form[$name] ?? '') ?>" required <?= $extra ?>>
         <div class="invalid-feedback"><?= h($errores[$name] ?? '') ?></div>
     </div>
-    <?php
+<?php
 }
 
 // ------------------------------------------------------------------
@@ -222,6 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'image' => post_texto('image'),
                 'link'  => post_texto('link'),
                 'state' => post_texto('state'),
+                'schedule_custom' => post_texto('schedule_custom')
             ];
             if ($v['title'] === '' || mb_strlen($v['title']) > TITULO_MAX) {
                 $errores['title'] = 'El título es obligatorio (máx. ' . TITULO_MAX . ' caracteres).';
@@ -238,12 +239,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$errores) {
                 $ok = ejecutar(
                     $conn,
-                    "UPDATE podcasts SET title = ?, image = ?, description = ?, state = ? WHERE id = ?",
-                    'ssssi',
-                    [$v['title'], $v['image'], $v['link'], $v['state'], $id]
+                    "UPDATE podcasts SET title = ?, image = ?, description = ?, state = ?, schedule_custom = ? WHERE id = ?",
+                    'sssssi',
+                    [$v['title'], $v['image'], $v['link'], $v['state'], $v['schedule_custom'], $id]
                 );
             }
-
         } elseif ($type === $temporadas) {
             // El podcast de una temporada no se cambia desde aquí, solo el número
             $number = post_entero('number', 0, NUMERO_MAX);
@@ -263,7 +263,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$errores) {
                 $ok = ejecutar($conn, "UPDATE seasons SET number = ? WHERE id = ?", 'ii', [$number, $id]);
             }
-
         } elseif ($type === $episodios) {
             $seasonId = post_entero('season_id', 1, PHP_INT_MAX);
             $number   = post_entero('number', 0, NUMERO_MAX);
@@ -344,6 +343,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="invalid-feedback"><?= h($errores['state'] ?? '') ?></div>
                 </div>
 
+                <div class="mb-3">
+                    <label for="schedule_custom" class="form-label">Horario Fijo Personalizado (Opcional)</label>
+                    <input type="text" class="form-control" id="schedule_custom" name="schedule_custom"
+                        value="<?= htmlspecialchars($podcast['schedule_custom'] ?? ''); ?>"
+                        placeholder="Ej: Martes:12:00,Jueves:12:00">
+                    <div class="form-text">Si lo dejas vacío, el sistema calculará el horario automáticamente basándose en los episodios. Si escribes días y horas, se respetarán tal cual.</div>
+                </div>
+
             <?php elseif ($type === $temporadas): ?>
 
                 <div class="mb-3">
@@ -369,7 +376,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <?php campo('N° Capitulo', 'number', 'number', $form, $errores, 'min="0" max="' . NUMERO_MAX . '" step="1"'); ?>
                 <?php campo('Titulo', 'title', 'text', $form, $errores, 'maxlength="' . TITULO_MAX . '"'); ?>
                 <?php campo('Duración (máx. 10:00:00)', 'duration', 'text', $form, $errores, 'maxlength="8" inputmode="numeric" autocomplete="off"'); ?>
-                <?php // step="1" mantiene los segundos de la fecha al guardar ?>
+                <?php // step="1" mantiene los segundos de la fecha al guardar 
+                ?>
                 <?php campo('Fecha de Publicacion', 'publish_date', 'datetime-local', $form, $errores, 'step="1"'); ?>
 
                 <script>
@@ -397,7 +405,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         input.addEventListener('input', function() {
                             input.value = formatear(input.value);
                             const msg = validar(input.value);
-                            input.setCustomValidity(msg);   // bloquea el envío si es inválido
+                            input.setCustomValidity(msg); // bloquea el envío si es inválido
                             input.classList.toggle('is-invalid', msg !== '');
                             feedback.textContent = msg;
                         });
