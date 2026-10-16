@@ -95,9 +95,9 @@ def obtener_ultima_temporada_id(cursor, podcast_id):
     """Busca el ID de la temporada más reciente registrada para un podcast específico."""
     cursor.execute(
         """
-        SELECT id FROM seasons 
-        WHERE podcast_id = %s 
-        ORDER BY number DESC, id DESC 
+        SELECT id FROM seasons
+        WHERE podcast_id = %s
+        ORDER BY number DESC, id DESC
         LIMIT 1
         """,
         (podcast_id,)
@@ -124,7 +124,7 @@ def insertar_episodio_en_ultima_temporada(cursor, conn, podcast_id, video_data):
         sql = """
             INSERT INTO episodes (season_id, youtube_id, title, duration, publish_date, status)
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE 
+            ON DUPLICATE KEY UPDATE
                 title = VALUES(title),
                 duration = VALUES(duration)
         """
@@ -625,6 +625,42 @@ def corregir_fechas_antiguas(driver, php_endpoint, API_KEY):
 # ------------------------------------------------------------------
 
 
+def enviar_mensaje_telegram(mensaje):
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": mensaje,
+        "parse_mode": "Markdown"
+    }
+
+    max_intentos = 3
+    intento = 0
+
+    while intento < max_intentos:
+        intento += 1
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                logging.info("Mensaje de Telegram enviado con éxito.")
+                return True
+            else:
+                logging.error(
+                    f"Intento {intento}/{max_intentos} - Error al enviar mensaje a Telegram: {response.text}")
+        except Exception as e:
+            logging.error(
+                f"Intento {intento}/{max_intentos} - Excepción al conectar con Telegram: {e}")
+
+        if intento < max_intentos:
+            time.sleep(3)  # Espera 3 segundos antes de reintentar
+
+    logging.error(
+        "Se agotaron los reintentos. No se pudo enviar el mensaje a Telegram.")
+    return False
+
+
 def procesar():
 
     inicio = datetime.now(ZoneInfo("America/Santiago"))
@@ -780,7 +816,7 @@ def procesar():
                 sincronizar_playlist_global(
                     driver, PHP_ENDPOINT, playlist_ids_general
                 )
-                
+
             # ==========================================
             # AL FINALIZAR TODO EL PROCESO DE SINCRONIZACIÓN:
             # ==========================================
@@ -788,6 +824,8 @@ def procesar():
                 'token': TOKEN_SECRET,
                 'action': 'registrar_fin_sincronizacion'
             })
+
+            enviar_mensaje_telegram(f"✅ Sincronización de podcasts finalizada.\n\n📊 Estadísticas:\n- Episodios procesados: {stats['episodios']}\n- Errores: {stats['errores']}")
 
     except Exception as e:
         estado = "ERROR"
