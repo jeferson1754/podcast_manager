@@ -978,7 +978,7 @@ $section = $_GET['section'] ?? $podcast;
                           WHEN 'Domingo' THEN 'Sunday'
                       END
                   AND e.publish_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-                ORDER BY e.publish_date DESC";
+                ORDER BY e.publish_date ASC";
 
                             $resPasados = $conn->query($queryPasados);
                             if ($resPasados && $resPasados->num_rows > 0) {
@@ -1052,7 +1052,7 @@ $section = $_GET['section'] ?? $podcast;
                                     else: ?>
                                         <div class="text-center py-4 text-muted">
                                             <i class="fas fa-calendar-minus fs-3 mb-2 d-block opacity-50"></i>
-                                            <span class="small">Sin entregas</span>
+                                            <span class="small">Sin podcasts</span>
                                         </div>
                                     <?php endif; ?>
                                 </div>
