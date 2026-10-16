@@ -284,4 +284,17 @@ elseif ($action === 'actualizar_pendientes_youtube') {
     exit;
 }
 
+elseif ($action === 'registrar_fin_sincronizacion') {
+    $now = date('Y-m-d H:i:s');
+
+    // Solo guardamos la fecha de la última sincronización
+    $stmt1 = $conn->prepare("REPLACE INTO site_settings (setting_key, setting_value) VALUES ('last_sync', ?)");
+    $stmt1->bind_param("s", $now);
+    $stmt1->execute();
+    $stmt1->close();
+
+    echo json_encode(['status' => 'success', 'message' => 'Última sincronización registrada']);
+    exit;
+}
+
 echo json_encode(['status' => 'error', 'message' => 'Acción no válida']);

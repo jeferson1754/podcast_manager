@@ -780,6 +780,14 @@ def procesar():
                 sincronizar_playlist_global(
                     driver, PHP_ENDPOINT, playlist_ids_general
                 )
+                
+            # ==========================================
+            # AL FINALIZAR TODO EL PROCESO DE SINCRONIZACIÓN:
+            # ==========================================
+            enviar_a_php_con_session(driver, PHP_ENDPOINT, {
+                'token': TOKEN_SECRET,
+                'action': 'registrar_fin_sincronizacion'
+            })
 
     except Exception as e:
         estado = "ERROR"

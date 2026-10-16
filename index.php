@@ -280,9 +280,50 @@ $section = $_GET['section'] ?? $podcast;
 
 <body>
     <!-- Navigation -->
-    <nav class="navbar navbar-expand-lg">
+    <?php
+    // Consultamos los ajustes utilizando MySQLi correctamente
+    $stmtMeta = $conn->query("SELECT setting_key, setting_value FROM site_settings");
+    $meta = [];
+
+    if ($stmtMeta) {
+        while ($row = $stmtMeta->fetch_assoc()) {
+            $meta[$row['setting_key']] = $row['setting_value'];
+        }
+    }
+
+    $lastSyncRaw = $meta['last_sync'] ?? '';
+    if (!empty($lastSyncRaw) && $lastSyncRaw !== 'Nunca') {
+        $dateObj = new DateTime($lastSyncRaw);
+        $lastSync = $dateObj->format('d-m-Y h:i a');
+    } else {
+        $lastSync = 'Nunca';
+    }
+    $newCount = $meta['new_episodes_count'] ?? 0;
+    // 1. Contar episodios añadidos hoy de forma segura
+    $sqlHoy = "SELECT COUNT(*) as total FROM episodes WHERE DATE(detected_at) = CURDATE()";
+    $resHoyQuery = $conn->query($sqlHoy);
+    $episodiosHoy = 0;
+    if ($resHoyQuery && $resHoyQuery instanceof mysqli_result) {
+        $resHoy = $resHoyQuery->fetch_assoc();
+        $episodiosHoy = intval($resHoy['total'] ?? 0);
+    }
+
+    // 2. Contar episodios añadidos ayer de forma segura
+    $sqlAyer = "SELECT COUNT(*) as total FROM episodes WHERE DATE(detected_at) = CURDATE() - INTERVAL 1 DAY";
+    $resAyerQuery = $conn->query($sqlAyer);
+    $episodiosAyer = 0;
+    if ($resAyerQuery && $resAyerQuery instanceof mysqli_result) {
+        $resAyer = $resAyerQuery->fetch_assoc();
+        $episodiosAyer = intval($resAyer['total'] ?? 0);
+    }
+
+    // 3. Calcular la diferencia correctamente
+    $diferencia = $episodiosHoy - $episodiosAyer;
+    ?>
+    <nav class="navbar navbar-expand-lg bg-white border-bottom py-3 shadow-sm">
         <div class="container">
-            <a class="navbar-brand d-flex align-items-center gap-2" href="index.php">
+            <!-- Logo / Marca -->
+            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold text-dark" href="index.php">
                 <i class="fas fa-podcast text-primary fs-4"></i> Podcast Manager
             </a>
 
@@ -291,7 +332,32 @@ $section = $_GET['section'] ?? $podcast;
             </button>
 
             <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="nav nav-pills ms-auto gap-1">
+                <!-- Bloque central / Indicador de estado moderno -->
+                <div class="d-flex align-items-center bg-light border px-3 py-1.5 rounded-pill shadow-xs gap-3" style="font-size: 0.85rem;">
+                    <div class="text-secondary d-flex align-items-center gap-2">
+                        <i class="fas fa-sync-alt text-primary"></i>
+                        <span>Sincronizado: <strong class="text-dark"><?= htmlspecialchars($lastSync); ?></strong></span>
+                    </div>
+
+                    <!-- Indicador comparativo -->
+                    <?php if ($episodiosHoy > 0): ?>
+                        <span class="badge bg-success rounded-pill px-2.5 py-1 fw-semibold">
+                            +<?= $episodiosHoy; ?> hoy
+                            <?php if ($diferencia > 0): ?>
+                                <span class="text-white-50">(+<?= $diferencia; ?> vs ayer)</span>
+                            <?php elseif ($diferencia < 0): ?>
+                                <span class="text-white-50">(<?= $diferencia; ?> vs ayer)</span>
+                            <?php endif; ?>
+                        </span>
+                    <?php else: ?>
+                        <span class="badge bg-secondary bg-opacity-10 text-secondary rounded-pill px-2.5 py-1 fw-normal">
+                            Sin nuevos hoy
+                        </span>
+                    <?php endif; ?>
+                </div>
+
+                <!-- Pestañas de navegación alineadas a la derecha -->
+                <ul class="nav nav-pills gap-1 align-items-center ms-auto">
                     <li class="nav-item">
                         <a class="nav-link <?php echo ($section == $podcast) ? 'active' : ''; ?>" href="index.php?section=<?= $podcast ?>">Podcasts</a>
                     </li>
