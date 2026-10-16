@@ -180,30 +180,46 @@ if ($action === 'guardar_episodio') {
     $existente = $stmtCheck->fetch();
 
     if ($existente) {
-        // Actualizar si antes estaba LIVE y ahora terminó, o si cambia a PUBLISHED
+        // Actualizar siempre el título, la duración y el estado para mantener los datos al día
         if ($existente['status'] === 'LIVE' && $status === 'PUBLISHED') {
-            $stmtUpdate = $pdo->prepare("UPDATE episodes SET duration = ?, status = 'PUBLISHED', completed_at = NOW(), title = ? WHERE id = ?");
-            $stmtUpdate->execute([$duracion, $titulo, $existente['id']]);
-            echo json_encode(['status' => 'updated', 'message' => 'Directo finalizado y actualizado']);
+            $stmtUpdate = $conn->prepare("UPDATE episodes SET title = ?, duration = ?, status = 'PUBLISHED', completed_at = NOW() WHERE id = ?");
+            $stmtUpdate->bind_param("ssi", $titulo, $duracion, $existente['id']);
+            $stmtUpdate->execute();
+            $stmtUpdate->close();
+
+            echo json_encode(['status' => 'updated', 'message' => 'Directo finalizado, título y duración actualizados']);
         } else {
-            // Actualizar el estado y sincronizar completed_at si pasa a PUBLISHED
+            // Actualizar título, duración y estado en cualquier otro caso
             if ($status === 'PUBLISHED') {
-                $stmtUpdate = $pdo->prepare("UPDATE episodes SET status = ?, completed_at = COALESCE(completed_at, NOW()) WHERE id = ?");
-                $stmtUpdate->execute([$status, $existente['id']]);
+                $stmtUpdate = $conn->prepare("UPDATE episodes SET title = ?, duration = ?, status = ?, completed_at = COALESCE(completed_at, NOW()) WHERE id = ?");
+                $stmtUpdate->bind_param("sssi", $titulo, $duracion, $status, $existente['id']);
             } else {
-                $stmtUpdate = $pdo->prepare("UPDATE episodes SET status = ?, completed_at = NULL WHERE id = ?");
-                $stmtUpdate->execute([$status, $existente['id']]);
+                $stmtUpdate = $conn->prepare("UPDATE episodes SET title = ?, duration = ?, status = ?, completed_at = NULL WHERE id = ?");
+                $stmtUpdate->bind_param("sssi", $titulo, $duracion, $status, $existente['id']);
             }
-            echo json_encode(['status' => 'exists', 'message' => 'Ya registrado y estado sincronizado']);
+            $stmtUpdate->execute();
+            $stmtUpdate->close();
+
+            echo json_encode(['status' => 'updated', 'message' => 'Episodio, título y duración sincronizados correctamente']);
         }
         exit;
     }
 
-    // 3. Obtener la última temporada del podcast
-    $stmtSeason = $pdo->prepare("SELECT id FROM seasons WHERE podcast_id = ? ORDER BY number DESC LIMIT 1");
-    $stmtSeason->execute([$podcastId]);
-    $season = $stmtSeason->fetch();
-    $seasonId = $season['id'] ?? 1;
+    // 4. Obtener la última temporada del podcast
+    $stmtSeason = $conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? ORDER BY number DESC LIMIT 1");
+    $stmtSeason->bind_param("i", $podcastId);
+    $stmtSeason->execute();
+    $season = $stmtSeason->get_result()->fetch_assoc();
+    $stmtSeason->close();
+    $seasonId = $season['id'] ?? null;
+
+    if (!$seasonId) {
+        $stmtCreateSeason = $conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, 1, 'Temporada 1')");
+        $stmtCreateSeason->bind_param("i", $podcastId);
+        $stmtCreateSeason->execute();
+        $seasonId = $conn->insert_id;
+        $stmtCreateSeason->close();
+    }
 
     // 4. Obtener el siguiente número de episodio
     $stmtNum = $pdo->prepare("SELECT MAX(number) as max_num FROM episodes WHERE season_id = ?");
@@ -282,9 +298,7 @@ elseif ($action === 'actualizar_pendientes_youtube') {
         echo json_encode(['status' => 'error', 'message' => 'Faltan datos obligatorios']);
     }
     exit;
-}
-
-elseif ($action === 'registrar_fin_sincronizacion') {
+} elseif ($action === 'registrar_fin_sincronizacion') {
     $now = date('Y-m-d H:i:s');
 
     // Solo guardamos la fecha de la última sincronización
