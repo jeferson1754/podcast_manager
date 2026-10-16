@@ -437,13 +437,24 @@ $section = $_GET['section'] ?? $podcast;
                                     <tr>
                                         <td class="fw-semibold text-muted"><?= $podcasts['id']; ?></td>
                                         <td>
-                                            <?php if (!empty($imagen_a_mostrar)): ?>
-                                                <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>" alt="Logo" class="img-thumb-preview rounded">
-                                            <?php else: ?>
-                                                <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
-                                                    <i class="fas fa-image"></i>
-                                                </div>
-                                            <?php endif; ?>
+                                            <div class="position-relative d-inline-block">
+                                                <?php if (!empty($imagen_a_mostrar)): ?>
+                                                    <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>"
+                                                        alt="Logo"
+                                                        class="img-thumb-preview rounded"
+                                                        onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='flex';">
+
+                                                    <!-- Este div se queda oculto (display: none) y solo se muestra si la imagen de arriba falla -->
+                                                    <div class="img-thumb-preview align-items-center justify-content-center bg-light text-muted rounded"
+                                                        style="display: none;">
+                                                        <i class="fas fa-image"></i>
+                                                    </div>
+                                                <?php else: ?>
+                                                    <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
+                                                        <i class="fas fa-image"></i>
+                                                    </div>
+                                                <?php endif; ?>
+                                            </div>
                                         </td>
                                         <td>
                                             <a href="<?= htmlspecialchars($podcasts['description']); ?>" target="_blank" class="fw-semibold text-dark text-decoration-none">
@@ -551,13 +562,24 @@ $section = $_GET['section'] ?? $podcast;
                                     <tr>
                                         <td class="fw-semibold text-muted"><?= $season['id']; ?></td>
                                         <td>
+
                                             <?php if (!empty($imagen_a_mostrar)): ?>
-                                                <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>" alt="Logo" class="img-thumb-preview rounded">
+                                                <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>"
+                                                    alt="Logo"
+                                                    class="img-thumb-preview rounded"
+                                                    onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='flex';">
+
+                                                <!-- Este div se queda oculto (display: none) y solo se muestra si la imagen de arriba falla -->
+                                                <div class="img-thumb-preview align-items-center justify-content-center bg-light text-muted rounded"
+                                                    style="display: none;">
+                                                    <i class="fas fa-image"></i>
+                                                </div>
                                             <?php else: ?>
                                                 <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
                                                     <i class="fas fa-image"></i>
                                                 </div>
                                             <?php endif; ?>
+
                                         </td>
                                         <td class="fw-semibold text-dark"><?= htmlspecialchars($season['podcast_title']); ?></td>
                                         <td>
@@ -1030,7 +1052,13 @@ $section = $_GET['section'] ?? $podcast;
                                     ?>
                                             <div class="d-flex align-items-center gap-3">
                                                 <?php if (!empty($item['image'])): ?>
-                                                    <img src="<?= htmlspecialchars($item['image']); ?>" class="img-thumb-preview" style="width: 50px; height: 50px;">
+                                                    <img src="<?= htmlspecialchars($item['image']); ?>"
+                                                        class="img-thumb-preview" style="width: 50px; height: 50px;"
+                                                        onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                                    <div class="img-thumb-preview align-items-center justify-content-center bg-light text-muted rounded"
+                                                        style="display: none;">
+                                                        <i class="fas fa-podcast"></i>
+                                                    </div>
                                                 <?php else: ?>
                                                     <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted">
                                                         <i class="fas fa-podcast"></i>
