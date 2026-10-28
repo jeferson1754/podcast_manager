@@ -1,844 +1,400 @@
-import yt_dlp
-from zoneinfo import ZoneInfo
-import time
-import csv
-import json
-import requests  # Importante para enviar a PHP sin bloqueos CORS
-from datetime import datetime
-import isodate
-from zoneinfo import ZoneInfo  # Requiere Python 3.9+
-import yt_dlp  # Necesario para leer playlists sin descargar
+import os
 import re
+import time
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import requests
+from dotenv import load_dotenv
 from googleapiclient.discovery import build
+
 from navegador import configurar_navegador
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-
-import os
-import logging
-from dotenv import load_dotenv
-
-# Cargar las variables
 load_dotenv()
 
-# Obtener el link o ruta del CSV
-CSV_URL = os.getenv("CSV_URL")
 API_KEY = os.getenv("API_KEY")
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR")
 PHP_ENDPOINT = os.getenv("PHP_ENDPOINT")
 HISTORIAL_FILE = os.getenv("HISTORIAL_FILE", "historial_ejecuciones.txt")
+TOKEN_SECRET = os.getenv("TOKEN_SECRET", "MI_CLAVE_SUPER_SECRETA_123")
+PLAYLIST_URL = os.getenv(
+    "PLAYLIST_URL",
+    "https://www.youtube.com/playlist?list=PL4wOdIekMghnJXO-_gOclIXiiZyPhhsxQ",
+)
+TZ_CHILE = ZoneInfo("America/Santiago")
 
 # ------------------------------------------------------------------
-# LOGGING (consola + archivo .txt)
+# LOGGING
 # ------------------------------------------------------------------
-
 logger = logging.getLogger("sincronizar_podcast")
 
 
 def configurar_logging():
-    """Configura el logger para escribir en consola y en HISTORIAL_FILE (modo append)."""
-    if logger.handlers:  # evita duplicar handlers si se llama más de una vez
+    if logger.handlers:
         return
-
     logger.setLevel(logging.INFO)
     formato = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
-
-    handler_archivo = logging.FileHandler(
-        HISTORIAL_FILE, mode="a", encoding="utf-8")
-    handler_archivo.setFormatter(formato)
-    logger.addHandler(handler_archivo)
-
-    handler_consola = logging.StreamHandler()
-    handler_consola.setFormatter(formato)
-    logger.addHandler(handler_consola)
+    h_archivo = logging.FileHandler(HISTORIAL_FILE, mode="a", encoding="utf-8")
+    h_archivo.setFormatter(formato)
+    logger.addHandler(h_archivo)
+    h_consola = logging.StreamHandler()
+    h_consola.setFormatter(formato)
+    logger.addHandler(h_consola)
 
 
 configurar_logging()
 
-# URL de tu script PHP subido a InfinityFree
-
-TOKEN_SECRET = "MI_CLAVE_SUPER_SECRETA_123"
-
-# Coloca aquí la URL de tu playlist de YouTube o la fuente de pendientes
-PLAYLIST_URL = "https://www.youtube.com/playlist?list=PL4wOdIekMghnJXO-_gOclIXiiZyPhhsxQ"
-
 # ------------------------------------------------------------------
-# FUNCIONES AUXILIARES
+# UTILIDADES
 # ------------------------------------------------------------------
 
 
 def guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje=""):
-    """Registra en el log (.txt) un resumen de la ejecución."""
     duracion = int((fin - inicio).total_seconds())
     nivel = logging.INFO if estado == "OK" else logging.ERROR
     logger.log(
         nivel,
         "RESUMEN | estado=%s | inicio=%s | fin=%s | duracion=%ss | "
-        "podcasts=%s | episodios=%s | errores=%s%s",
+        "episodios=%s | actualizados=%s | errores=%s%s",
         estado,
         inicio.strftime("%Y-%m-%d %H:%M:%S"),
         fin.strftime("%Y-%m-%d %H:%M:%S"),
         duracion,
-        stats.get("podcasts", 0),
         stats.get("episodios", 0),
+        stats.get("actualizados", 0),
         stats.get("errores", 0),
         f" | mensaje={mensaje}" if mensaje else "",
     )
     logger.info("=" * 70)
 
 
-def obtener_ultima_temporada_id(cursor, podcast_id):
-    """Busca el ID de la temporada más reciente registrada para un podcast específico."""
-    cursor.execute(
-        """
-        SELECT id FROM seasons
-        WHERE podcast_id = %s
-        ORDER BY number DESC, id DESC
-        LIMIT 1
-        """,
-        (podcast_id,)
-    )
-    resultado = cursor.fetchone()
-
-    # Si encuentra una temporada, retorna su ID; de lo contrario, None
-    return resultado['id'] if resultado else None
-
-
-def insertar_episodio_en_ultima_temporada(cursor, conn, podcast_id, video_data):
-    """Inserta un nuevo episodio exclusivamente en la última temporada registrada del podcast."""
-
-    # 1. Obtenemos el ID de la última temporada
-    season_id = obtener_ultima_temporada_id(cursor, podcast_id)
-
-    if not season_id:
-        logger.error(
-            f"No se encontró ninguna temporada registrada para el podcast ID: {podcast_id}")
-        return False
-
+def utc_a_chile(raw):
+    """'2025-01-31T22:00:00Z' (UTC) -> 'YYYY-MM-DD HH:MM:SS' (America/Santiago)."""
+    if not raw:
+        return None
     try:
-        # 2. Insertamos el episodio usando ese season_id
-        sql = """
-            INSERT INTO episodes (season_id, youtube_id, title, duration, publish_date, status)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                title = VALUES(title),
-                duration = VALUES(duration)
-        """
-        valores = (
-            season_id,
-            video_data["youtube_id"],
-            video_data["title"],
-            video_data["duration"],
-            video_data["publish_date"],
-            "PENDING"  # o el estado por defecto que uses
-        )
-        cursor.execute(sql, valores)
-        conn.commit()
-        return True
-
-    except Exception as e:
-        conn.rollback()
-        logger.error(
-            f"Error al insertar el episodio en la última temporada: {e}")
-        return False
+        # Algunas fechas traen milisegundos (…:00.123Z); se descartan.
+        raw = raw.split(".")[0].rstrip("Z") + "Z"
+        utc_dt = datetime.strptime(
+            raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=ZoneInfo("UTC"))
+        return utc_dt.astimezone(TZ_CHILE).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
 
 
-def duracion_a_segundos(iso_duration):
-    try:
-        dur = isodate.parse_duration(iso_duration)
-        return int(dur.total_seconds())
-    except:
-        return 0
-
-
-def iso8601_a_hhmmss(iso_duration):
-    segundos = duracion_a_segundos(iso_duration)
-    m, s = divmod(segundos, 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
-
-def cumple_filtros(titulo, permitidas_str, bloqueadas_str):
-    titulo_lower = titulo.lower()
-
-    if bloqueadas_str:
-        bloqueadas = [p.strip().lower()
-                      for p in bloqueadas_str.split(',') if p.strip()]
-        for p in bloqueadas:
-            if p in titulo_lower:
-                return False
-
-    if permitidas_str:
-        permitidas = [p.strip().lower()
-                      for p in permitidas_str.split(',') if p.strip()]
-        encontrada = any(p in titulo_lower for p in permitidas)
-        if not encontrada:
-            return False
-
-    return True
-
-
-def obtener_json_con_selenium(driver, url):
-    """Descarga datos de YouTube o Google Sheets usando Selenium."""
-    js_code = f"""
-        var done = arguments[arguments.length - 1];
-        fetch("{url}")
-            .then(response => response.text())
-            .then(data => done(data))
-            .catch(err => done(JSON.stringify({{error: err.toString()}})));
-    """
-    return driver.execute_async_script(js_code)
-
-
-def obtener_csv_con_reintentos(url, max_intentos=3, espera_base=5):
-    """Descarga datos aplicando reintentos automáticos ante fallos de red o timeouts."""
-    for intento in range(1, max_intentos + 1):
-        try:
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            return response.text  # Si sale bien, retorna el contenido de inmediato
-
-        except requests.exceptions.RequestException as e:
-            if intento < max_intentos:
-                print(
-                    f"[AVISO] Intento {intento}/{max_intentos} falló: {e}. Reintentando en {espera_base}s...")
-                time.sleep(espera_base)
-                # Opcional: puedes duplicar el tiempo de espera en cada fallo (espera_base * 2)
-            else:
-                print(
-                    f"[ERROR CRÍTICO] Se agotaron los {max_intentos} intentos. No se pudo conectar.")
-                raise e
+def parsear_duracion_iso(iso_duration):
+    """PT1H2M10S -> 01:02:10"""
+    m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", iso_duration or "")
+    if not m:
+        return "00:00:00"
+    h, mi, s = (int(g) if g else 0 for g in m.groups())
+    return f"{h:02d}:{mi:02d}:{s:02d}"
 
 
 def enviar_a_php_con_session(driver, php_endpoint, payload):
-    """Envía datos por POST usando JavaScript (fetch) directamente dentro
-
-    del navegador Selenium, evitando cualquier bloqueo de InfinityFree.
-    """
+    """POST a PHP vía fetch() dentro de Selenium (evita bloqueo de InfinityFree)."""
     if php_endpoint not in driver.current_url:
         driver.get(php_endpoint)
 
     script = """
     const callback = arguments[arguments.length - 1];
     const payloadData = arguments[0];
-
     fetch(window.location.href, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payloadData)
     })
-    .then(response => response.text())
+    .then(r => r.text())
     .then(text => {
-        try {
-            callback(JSON.parse(text));
-        } catch(e) {
-            callback({status: 'error', message: 'HTML_RETURNED', raw: text});
-        }
+        try { callback(JSON.parse(text)); }
+        catch(e) { callback({status: 'error', message: 'HTML_RETURNED', raw: text}); }
     })
-    .catch(error => callback({status: 'error', message: error.toString()}));
+    .catch(err => callback({status: 'error', message: err.toString()}));
     """
-
     try:
-        res_json = driver.execute_async_script(script, payload)
-        if isinstance(res_json, dict) and res_json.get("message") == "HTML_RETURNED":
+        res = driver.execute_async_script(script, payload)
+        if isinstance(res, dict) and res.get("message") == "HTML_RETURNED":
             logger.warning(
-                f"⚠️️ [RESPUESTA RAW DE INFINITYFREE]:\n{res_json.get('raw')[:400]}\n")
+                f"⚠️ [RESPUESTA RAW DE INFINITYFREE]:\n{res.get('raw', '')[:400]}\n")
             return {"status": "error", "message": "Servidor devolvió HTML/Error de PHP"}
-        return res_json
+        return res
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
-def actualizar_episodios_pendientes(driver, php_endpoint, API_KEY):
-    """Consulta los episodios pendientes en la BD, obtiene su título y duración real de YouTube y los actualiza."""
-    youtube = build("youtube", "v3", developerKey=API_KEY)
-
-    logger.info(
-        "🔧 Iniciando actualización de títulos y duración para episodios pendientes...")
-
-    # 1. Traer solo los episodios pendientes desde PHP
-    res_db = enviar_a_php_con_session(driver, php_endpoint, {
-        'token': TOKEN_SECRET,
-        'action': 'obtener_episodios_pendientes'
-    })
-
-    episodios_db = res_db.get(
-        'episodios', []) if isinstance(res_db, dict) else []
-
-    # Mapeamos para asociar youtube_id con el id interno si lo necesitas
-    if not episodios_db:
-        logger.info(
-            "⚠️ No se encontraron episodios pendientes en la base de datos.")
-        return
-
-    video_ids = [str(ep['youtube_id']).strip()
-                 for ep in episodios_db if ep and ep.get('youtube_id')]
-
-    # 2. Consultar la API de YouTube en bloques de hasta 50 IDs
-    for i in range(0, len(video_ids), 50):
-        batch_ids = video_ids[i:i+50]
+def enviar_mensaje_telegram(mensaje):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return False
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": mensaje}
+    for intento in range(1, 4):
         try:
-            # Pedimos tanto 'snippet' (para el título) como 'contentDetails' (para la duración)
-            vid_request = youtube.videos().list(
-                part="snippet,contentDetails",
-                id=",".join(batch_ids)
-            )
-            vid_response = vid_request.execute()
-
-            for vid_item in vid_response.get("items", []):
-                v_id = vid_item["id"]
-                nuevo_titulo = vid_item["snippet"]["title"]
-                # Viene en formato ISO 8601 (ej: PT1H2M10S)
-                raw_duration = vid_item["contentDetails"]["duration"]
-
-                # Opcional: Puedes convertir la duración ISO a segundos o formato HH:MM:SS si tu BD lo requiere
-                # Asegúrate de tener esta función o guárdala como prefieras
-                duracion_segundos = iso8601_a_hhmmss(raw_duration)
-
-                # Enviamos la orden de actualización a PHP
-                res_update = enviar_a_php_con_session(driver, php_endpoint, {
-                    'token': TOKEN_SECRET,
-                    'action': 'actualizar_pendientes_youtube',
-                    'youtube_id': v_id,
-                    'title': nuevo_titulo,
-                    'duration': duracion_segundos
-                })
-
-                logger.info(
-                    f"✅ Episodio pendiente actualizado ({v_id}) -> Título: {nuevo_titulo}")
-
+            r = requests.post(url, json=payload, timeout=10)
+            if r.status_code == 200:
+                logger.info("Mensaje de Telegram enviado con éxito.")
+                return True
+            logger.error(f"Intento {intento}/3 - Telegram: {r.text}")
         except Exception as e:
-            logger.error(
-                f"⚠️ Error al actualizar lote de pendientes en YouTube: {e}")
+            logger.error(f"Intento {intento}/3 - Excepción Telegram: {e}")
+        if intento < 3:
+            time.sleep(3)
+    return False
 
-    logger.info("🎉 Proceso de actualización de episodios pendientes finalizado.")
+# ------------------------------------------------------------------
+# YOUTUBE: SOLO LA PLAYLIST DESIGNADA + SUS DETALLES
+# ------------------------------------------------------------------
 
 
-def obtener_videos_playlist_api(url_or_playlist_id, API_KEY):
-    """Extrae videos de una playlist de YouTube usando la API oficial v3 (Soporte optimizado para VODs y Lives)."""
-    youtube = build("youtube", "v3", developerKey=API_KEY)
+def obtener_videos_playlist_api(url_or_playlist_id, api_key):
+    """
+    Devuelve {youtube_id: info} con TODOS los videos de la playlist (con paginación).
+    Si la API falla, LANZA la excepción: así nunca se sincroniza con una lista
+    incompleta (que marcaría episodios como PUBLISHED por error).
+    """
+    youtube = build("youtube", "v3", developerKey=api_key)
 
-    # 1. Extraer el ID de la playlist si el usuario pasó una URL completa
     playlist_id = url_or_playlist_id
-    if "list=" in url_or_playlist_id:
-        match = re.search(r'[?&]list=([a-zA-Z0-9_-]+)', url_or_playlist_id)
-        if match:
-            playlist_id = match.group(1)
+    m = re.search(r"[?&]list=([a-zA-Z0-9_-]+)", url_or_playlist_id)
+    if m:
+        playlist_id = m.group(1)
 
-    videos = []
-    video_ids = []
+    # 1. Items de la playlist (paginado)
     item_map = {}
-
-    try:
-        # 2. Obtener los elementos de la playlist
-        request = youtube.playlistItems().list(
+    page_token = None
+    while True:
+        resp = youtube.playlistItems().list(
             part="snippet",
             playlistId=playlist_id,
-            maxResults=50
-        )
-        response = request.execute()
+            maxResults=50,
+            pageToken=page_token,
+        ).execute()
 
-        for item in response.get("items", []):
-            snippet = item.get("snippet", {})
-
-            # Omitir videos eliminados o privados
-            if snippet.get("title") == "Private video" or snippet.get("title") == "Deleted video":
+        for item in resp.get("items", []):
+            sn = item.get("snippet", {})
+            if sn.get("title") in ("Private video", "Deleted video"):
+                continue
+            vid_id = sn.get("resourceId", {}).get("videoId")
+            if not vid_id:
                 continue
 
-            vid_id = snippet.get("resourceId", {}).get("videoId")
-            if vid_id:
-                video_ids.append(vid_id)
+            item_map[vid_id] = {
+                "youtube_id": vid_id,
+                "title": sn.get("title", "Sin título").strip(),
+                "channel_id": (sn.get("videoOwnerChannelId") or sn.get("channelId", "")).strip(),
+                "channel_name": (sn.get("videoOwnerChannelTitle") or sn.get("channelTitle") or "Desconocido").strip(),
+                "publish_date": (utc_a_chile(sn.get("publishedAt"))
+                                 or datetime.now(TZ_CHILE).strftime("%Y-%m-%d %H:%M:%S")),
+                "duration": "00:00:00",
+                "actual_start_time": None,
+                "es_directo_finalizado": False,
+            }
 
-                # Fallback inicial usando publishedAt de la playlist por si acaso
-                raw_published_at = snippet.get("publishedAt")
-                publish_date = None
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
 
-                if raw_published_at:
-                    try:
-                        utc_dt = datetime.strptime(
-                            raw_published_at, "%Y-%m-%dT%H:%M:%SZ"
-                        ).replace(tzinfo=ZoneInfo("UTC"))
-                        chile_dt = utc_dt.astimezone(
-                            ZoneInfo("America/Santiago"))
-                        publish_date = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        pass
+    # 2. Detalles en lote (duración + datos de directo)
+    ids = list(item_map.keys())
+    for i in range(0, len(ids), 50):
+        resp = youtube.videos().list(
+            part="contentDetails,liveStreamingDetails",
+            id=",".join(ids[i:i + 50]),
+        ).execute()
 
-                if not publish_date:
-                    publish_date = datetime.now(
-                        ZoneInfo("America/Santiago")).strftime("%Y-%m-%d %H:%M:%S")
+        for v in resp.get("items", []):
+            info = item_map.get(v["id"])
+            if not info:
+                continue
 
-                item_map[vid_id] = {
-                    "youtube_id": vid_id,
-                    "title": snippet.get("title", "Sin título").strip(),
-                    "channel_id": snippet.get("channelId", "").strip(),
-                    "channel_name": snippet.get("videoOwnerChannelTitle") or snippet.get("channelTitle", "Desconocido").strip(),
-                    "publish_date": publish_date
-                }
+            info["duration"] = parsear_duracion_iso(
+                v.get("contentDetails", {}).get("duration", "PT0S"))
 
-        # 3. Consultar los detalles en lote (contentDetails y liveStreamingDetails)
-        if video_ids:
-            for i in range(0, len(video_ids), 50):
-                batch_ids = video_ids[i:i+50]
-                vid_request = youtube.videos().list(
-                    part="contentDetails,liveStreamingDetails",
-                    id=",".join(batch_ids)
-                )
-                vid_response = vid_request.execute()
+            live = v.get("liveStreamingDetails", {})
+            inicio = utc_a_chile(live.get("actualStartTime"))
+            # Directo FINALIZADO = tiene hora real de inicio Y de término
+            if inicio and live.get("actualEndTime"):
+                info["actual_start_time"] = inicio
+                info["es_directo_finalizado"] = True
+                info["publish_date"] = inicio   # fecha = HORA DE INICIO del directo
 
-                for vid_item in vid_response.get("items", []):
-                    v_id = vid_item["id"]
-                    if v_id in item_map:
-                        # Extraer duración
-                        iso_duration = vid_item.get(
-                            "contentDetails", {}).get("duration", "PT0S")
-                        item_map[v_id]["duration"] = parsear_duracion_iso(
-                            iso_duration)
+    # 3. Imagen de cada canal (1 unidad de cuota por lote de 50 canales)
+    canales = sorted({v["channel_id"] for v in item_map.values() if v["channel_id"]})
+    imagenes = {}
+    for i in range(0, len(canales), 50):
+        resp = youtube.channels().list(
+            part="snippet", id=",".join(canales[i:i + 50])).execute()
+        for c in resp.get("items", []):
+            th = c.get("snippet", {}).get("thumbnails", {})
+            img = th.get("high") or th.get("medium") or th.get("default") or {}
+            imagenes[c["id"]] = img.get("url", "")
+    for v in item_map.values():
+        v["channel_image"] = imagenes.get(v["channel_id"], "")
 
-                        # --- DETECCIÓN INTELIGENTE DE FECHA PARA TRANSMISIONES EN VIVO ---
-                        live_details = vid_item.get("liveStreamingDetails", {})
-                        raw_date = None
+    return item_map
 
-                        if "actualEndTime" in live_details:
-                            raw_date = live_details["actualEndTime"]
-                        elif "actualStartTime" in live_details:
-                            raw_date = live_details["actualStartTime"]
-
-                        # Si es un directo finalizado/en curso, recalibramos la fecha de publicación
-                        if raw_date:
-                            try:
-                                utc_dt = datetime.strptime(
-                                    raw_date, "%Y-%m-%dT%H:%M:%SZ"
-                                ).replace(tzinfo=ZoneInfo("UTC"))
-                                chile_dt = utc_dt.astimezone(
-                                    ZoneInfo("America/Santiago"))
-                                item_map[v_id]["publish_date"] = chile_dt.strftime(
-                                    "%Y-%m-%d %H:%M:%S")
-                            except Exception:
-                                pass
-
-        # Rellenar valores por defecto y armar la lista final
-        for vid_id in video_ids:
-            if vid_id in item_map:
-                if "duration" not in item_map[vid_id]:
-                    item_map[vid_id]["duration"] = "00:00:00"
-                videos.append(item_map[vid_id])
-
-    except Exception as e:
-        print(f"Error al consultar la API de YouTube: {e}")
-
-    return videos
+# ------------------------------------------------------------------
+# SINCRONIZACIÓN CON LA BD (vía PHP)
+# ------------------------------------------------------------------
 
 
-def parsear_duracion_iso(iso_duration):
-    """Convierte duración ISO 8601 (ej: PT1H2M10S) a formato HH:MM:SS."""
-    match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', iso_duration)
-    if not match:
-        return "00:00:00"
+def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
+    logger.info("📋 Sincronizando playlist designada...")
 
-    horas = int(match.group(1)) if match.group(1) else 0
-    minutos = int(match.group(2)) if match.group(2) else 0
-    segundos = int(match.group(3)) if match.group(3) else 0
-
-    return f"{horas:02d}:{minutos:02d}:{segundos:02d}"
-
-
-def sincronizar_playlist_global(driver, php_endpoint, playlist_ids):
-    """Sincroniza la playlist global de pendientes de forma totalmente independiente,
-    autodectando el canal y podcast de cada video (Con soporte para VODs y Lives).
-    """
-    logger.info(f"📋 Sincronizando playlist global de pendientes...")
-
-    # 🛡️ VALIDACIÓN DE SEGURIDAD CRÍTICA
-    if len(playlist_ids) == 0:
-        logger.warning(
-            "⚠️ ADVERTENCIA: La playlist global está vacía. Omitiendo para evitar falsos positivos.")
+    if not playlist_ids:
+        logger.warning("⚠️ Playlist vacía. Se omite para evitar falsos PUBLISHED.")
         return
 
-    # 1. Obtener TODOS los episodios existentes en la BD
     res_db = enviar_a_php_con_session(driver, php_endpoint, {
-        'token': TOKEN_SECRET,
-        'action': 'obtener_todos_episodios'
+        "token": TOKEN_SECRET,
+        "action": "obtener_todos_episodios",
     })
+    if not isinstance(res_db, dict) or res_db.get("status") != "success":
+        raise RuntimeError(f"No se pudo leer episodios de la BD: {res_db}")
 
-    episodios_db = res_db.get(
-        'episodios', []) if isinstance(res_db, dict) else []
-
-    # 🛡️ Blindaje: Mapa global de todos los episodios registrados en el sistema
     db_map = {
-        str(ep['youtube_id']).strip(): ep
-        for ep in episodios_db
-        if ep and ep.get('youtube_id') is not None
+        str(ep["youtube_id"]).strip(): ep
+        for ep in res_db.get("episodios", [])
+        if ep and ep.get("youtube_id") is not None
     }
 
-    # 2. Procesar cada video de la playlist global
- # 2. Procesar cada video de la playlist global
-    for yt_id, v_info in playlist_ids.items():
-        if yt_id not in db_map:
-            logger.info(
-                f"  🆕 Nuevo en playlist global (Autodetectando canal): {v_info['title']}")
+    # 1. Videos de la playlist
+    for yt_id, v in playlist_ids.items():
+        ep = db_map.get(yt_id)
 
-            # Aseguramos la fecha correcta priorizando el inicio del live si existe en v_info
-            publish_date = (
-                v_info.get('actual_start_time') or
-                v_info.get('publish_date') or
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
-
-            # Extraemos la imagen del canal desde v_info (ajusta la clave según tu extractor de YouTube)
-            channel_image = v_info.get('thumbnails', {}).get(
-                'default', {}).get('url', '')
-            # Enviamos a PHP. PHP se encarga de buscar el podcast_id usando el channel_id
-            enviar_a_php_con_session(driver, php_endpoint, {
-                'token': TOKEN_SECRET,
-                'action': 'guardar_episodio',
-                'youtube_id': yt_id,
-                'channel_id': v_info.get('channel_id', ''),
-                'channel_name': v_info.get('channel_name', ''),
-                'channel_image': channel_image,  # <-- Agregado aquí
-                'title': v_info['title'],
-                'duration': v_info.get('duration', '00:00:00'),
-                'status': 'PENDING',
-                'publish_date': publish_date
+        # 1a. Nuevo
+        if ep is None:
+            logger.info(f"  🆕 Nuevo en playlist: {v['title']}")
+            res = enviar_a_php_con_session(driver, php_endpoint, {
+                "token": TOKEN_SECRET,
+                "action": "guardar_episodio",
+                "youtube_id": yt_id,
+                "channel_id": v.get("channel_id", ""),
+                "channel_name": v.get("channel_name", ""),
+                "channel_image": v.get("channel_image", ""),
+                "title": v["title"],
+                "duration": v["duration"],
+                "status": "PENDING",
+                "publish_date": v["publish_date"],
             })
-        else:
-            duracion_actual_db = db_map[yt_id].get('duration', '00:00:00')
-            duracion_nueva = v_info.get('duration', '00:00:00')
+            if res.get("status") in ("inserted", "updated"):
+                stats["actualizados"] += 1
+            else:
+                stats["errores"] += 1
+                logger.error(f"  ❌ Error guardando {yt_id}: {res}")
+            continue
 
-            # Si ya estaba pero se había completado y volvió a entrar a la playlist
-            if db_map[yt_id].get('status') == 'PUBLISHED':
-                logger.info(
-                    f"  🔄 Reactivando a PENDING (volvió a la playlist): {v_info['title']}")
-                enviar_a_php_con_session(driver, php_endpoint, {
-                    'token': TOKEN_SECRET,
-                    'action': 'actualizar_estado',
-                    'youtube_id': yt_id,
-                    'status': 'PENDING'
-                })
-            elif duracion_actual_db == "00:00:00" and duracion_nueva != "00:00:00":
-                logger.info(
-                    f"  ⏱️ Actualizando duración para: {v_info['title']} ({duracion_nueva})")
-                enviar_a_php_con_session(driver, php_endpoint, {
-                    'token': TOKEN_SECRET,
-                    'action': 'actualizar_duracion',
-                    'youtube_id': yt_id,
-                    'duration': duracion_nueva
-                })
-
-    # 3. Marcar como PUBLISHED los que ya salieron de la playlist global
-    for yt_id, ep_info in db_map.items():
-        if yt_id not in playlist_ids and ep_info.get('status') != 'PUBLISHED':
-            logger.info(
-                f"  ✅ Quitado de YouTube/Playlist (Marcando como PUBLISHED): {ep_info.get('title', yt_id)}")
+        # 1b. Reactivar si volvió a la playlist
+        if ep.get("status") == "PUBLISHED":
+            logger.info(f"  🔄 Reactivando a PENDING: {v['title']}")
             enviar_a_php_con_session(driver, php_endpoint, {
-                'token': TOKEN_SECRET,
-                'action': 'actualizar_estado',
-                'youtube_id': yt_id,
-                'status': 'PUBLISHED'
+                "token": TOKEN_SECRET,
+                "action": "actualizar_estado",
+                "youtube_id": yt_id,
+                "status": "PENDING",
             })
+            stats["actualizados"] += 1
 
+        # 1c. Duración (si estaba en 0 y ahora ya existe)
+        if (ep.get("duration") in (None, "", "00:00:00")) and v["duration"] != "00:00:00":
+            logger.info(f"  ⏱️ Duración actualizada: {v['title']} ({v['duration']})")
+            enviar_a_php_con_session(driver, php_endpoint, {
+                "token": TOKEN_SECRET,
+                "action": "actualizar_duracion",
+                "youtube_id": yt_id,
+                "duration": v["duration"],
+            })
+            stats["actualizados"] += 1
 
-def corregir_fechas_antiguas(driver, php_endpoint, API_KEY):
-    """Consulta todos los episodios en la BD y actualiza su publish_date con actualEndTime si es un directo."""
-    youtube = build("youtube", "v3", developerKey=API_KEY)
+        # 1d. Directo terminado -> fecha = hora de inicio del directo
+        if v["es_directo_finalizado"]:
+            fecha_bd = str(ep.get("publish_date") or "")[:19]
+            if fecha_bd != v["actual_start_time"]:
+                res = enviar_a_php_con_session(driver, php_endpoint, {
+                    "token": TOKEN_SECRET,
+                    "action": "actualizar_fecha",
+                    "youtube_id": yt_id,
+                    "publish_date": v["actual_start_time"],
+                })
+                if res.get("status") == "success":
+                    logger.info(
+                        f"  📅 Directo finalizado, fecha -> inicio del live "
+                        f"({fecha_bd or 'vacía'} → {v['actual_start_time']}): {v['title']}")
+                    stats["actualizados"] += 1
+                else:
+                    stats["errores"] += 1
+                    logger.error(f"  ❌ Error actualizando fecha de {yt_id}: {res}")
 
-    logger.info(
-        "🔧 Iniciando revisión de registros antiguos para corregir fechas de directos...")
-
-    # 1. Traer todos los episodios de la BD
-    res_db = enviar_a_php_con_session(driver, php_endpoint, {
-        'token': TOKEN_SECRET,
-        'action': 'obtener_todos_episodios'
-    })
-
-    episodios_db = res_db.get(
-        'episodios', []) if isinstance(res_db, dict) else []
-    video_ids = [str(ep['youtube_id']).strip()
-                 for ep in episodios_db if ep and ep.get('youtube_id')]
-
-    if not video_ids:
-        logger.info(
-            "⚠️ No se encontraron episodios en la base de datos para corregir.")
-        return
-
-    # 2. Consultar la API de YouTube en bloques de hasta 50 IDs
-    for i in range(0, len(video_ids), 50):
-        batch_ids = video_ids[i:i+50]
-        try:
-            vid_request = youtube.videos().list(
-                part="liveStreamingDetails",
-                id=",".join(batch_ids)
-            )
-            vid_response = vid_request.execute()
-
-            for vid_item in vid_response.get("items", []):
-                v_id = vid_item["id"]
-                live_details = vid_item.get("liveStreamingDetails", {})
-
-                raw_date = None
-
-                if "actualStartTime" in live_details:
-                    raw_date = live_details["actualStartTime"]
-                elif "actualEndTime" in live_details:
-                    raw_date = live_details["actualEndTime"]
-
-                # Si es un directo y tiene fecha real, la actualizamos
-                if raw_date:
-                    try:
-                        utc_dt = datetime.strptime(
-                            raw_date, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=ZoneInfo("UTC"))
-                        chile_dt = utc_dt.astimezone(
-                            ZoneInfo("America/Santiago"))
-                        nueva_fecha = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-                        # Enviamos la orden de actualización a PHP
-                        # Enviamos la orden de actualización a PHP
-                        res_update = enviar_a_php_con_session(driver, php_endpoint, {
-                            'token': TOKEN_SECRET,
-                            'action': 'actualizar_fecha',
-                            'youtube_id': v_id,
-                            'publish_date': nueva_fecha
-                        })
-
-                        # Imprime esto para ver qué dice PHP exactamente en la consola
-                        print(f"Respuesta de PHP para {v_id}: {res_update}")
-
-                        logger.info(
-                            f"✅ Fecha histórica corregida para el video {v_id}: {nueva_fecha}")
-                    except Exception as e:
-                        logger.error(
-                            f"⚠️ Error al formatear fecha del video {v_id}: {e}")
-        except Exception as e:
-            logger.error(
-                f"⚠️ Error al consultar el lote de videos en YouTube: {e}")
-
-    logger.info("🎉 Proceso de corrección de fechas históricas finalizado.")
+    # 2. Los que salieron de la playlist -> PUBLISHED
+    for yt_id, ep in db_map.items():
+        if yt_id not in playlist_ids and ep.get("status") != "PUBLISHED":
+            logger.info(f"  ✅ Salió de la playlist (PUBLISHED): {ep.get('title', yt_id)}")
+            enviar_a_php_con_session(driver, php_endpoint, {
+                "token": TOKEN_SECRET,
+                "action": "actualizar_estado",
+                "youtube_id": yt_id,
+                "status": "PUBLISHED",
+            })
+            stats["actualizados"] += 1
 
 # ------------------------------------------------------------------
 # PROCESO PRINCIPAL
 # ------------------------------------------------------------------
 
 
-def enviar_mensaje_telegram(mensaje):
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": mensaje,
-        "parse_mode": "Markdown"
-    }
-
-    max_intentos = 3
-    intento = 0
-
-    while intento < max_intentos:
-        intento += 1
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            if response.status_code == 200:
-                logging.info("Mensaje de Telegram enviado con éxito.")
-                return True
-            else:
-                logging.error(
-                    f"Intento {intento}/{max_intentos} - Error al enviar mensaje a Telegram: {response.text}")
-        except Exception as e:
-            logging.error(
-                f"Intento {intento}/{max_intentos} - Excepción al conectar con Telegram: {e}")
-
-        if intento < max_intentos:
-            time.sleep(3)  # Espera 3 segundos antes de reintentar
-
-    logging.error(
-        "Se agotaron los reintentos. No se pudo enviar el mensaje a Telegram.")
-    return False
-
-
 def procesar():
-
-    inicio = datetime.now(ZoneInfo("America/Santiago"))
-    stats = {"podcasts": 0, "episodios": 0, "errores": 0}
-    estado = "OK"
-    mensaje = ""
+    inicio = datetime.now(TZ_CHILE)
+    stats = {"episodios": 0, "actualizados": 0, "errores": 0}
+    estado, mensaje = "OK", ""
+    driver = None
 
     logger.info("=" * 70)
     logger.info("INICIO DE EJECUCIÓN")
-    logger.info("🌐 Iniciando navegador Selenium...")
-    driver = configurar_navegador(DOWNLOAD_DIR)
-
-    # corregir_fechas_antiguas(driver, PHP_ENDPOINT, API_KEY)
 
     try:
+        logger.info("🌐 Iniciando navegador Selenium...")
+        driver = configurar_navegador(DOWNLOAD_DIR)
+
         driver.get("https://www.google.com")
         time.sleep(3)
-
-        logger.info("📄 Descargando configuración desde Google Sheets CSV...")
-        raw_csv = obtener_csv_con_reintentos(CSV_URL)
-
-        lines = raw_csv.splitlines()
-        reader = csv.reader(lines)
-        header = next(reader, None)
-
         logger.info("🔑 Pasando validación de seguridad de InfinityFree...")
         driver.get(PHP_ENDPOINT)
         time.sleep(3)
 
-        # =========================================================================
-        # 1. BARRIDO DE CANALES (Registrar o actualizar datos de cada canal/podcast)
-        # =========================================================================
+        playlist_ids = obtener_videos_playlist_api(PLAYLIST_URL, API_KEY)
+        stats["episodios"] = len(playlist_ids)
+        logger.info(f"  ✅ {len(playlist_ids)} videos en la playlist.")
 
-        for row in reader:
-            if len(row) < 6:
-                continue
+        sincronizar_playlist_global(driver, PHP_ENDPOINT, playlist_ids, stats)
 
-            channel_id = row[0].strip()
-            nombre_canal = row[1].strip()
-            permitidas = row[2].strip()
-            bloqueadas = row[3].strip()
-            tipo = row[5].strip().lower()
+        enviar_a_php_con_session(driver, PHP_ENDPOINT, {
+            "token": TOKEN_SECRET,
+            "action": "registrar_fin_sincronizacion",
+        })
 
-            if 'podcast' not in tipo or not channel_id:
-                continue
-
-            logger.info(
-                f"🔍 Procesando podcast: {nombre_canal} ({channel_id})...")
-
-            yt_channel_url = f"https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails&id={channel_id}&key={API_KEY}"
-            raw_chan = obtener_json_con_selenium(driver, yt_channel_url)
-            res_chan = json.loads(raw_chan)
-
-            if not res_chan.get('items'):
-                logger.warning("  ⚠️ No se encontró el canal.")
-                continue
-
-            snippet = res_chan['items'][0]['snippet']
-            uploads_id = res_chan['items'][0]['contentDetails']['relatedPlaylists']['uploads']
-            image_url = snippet.get('thumbnails', {}).get(
-                'default', {}).get('url', '')
-            channel_url = f"https://www.youtube.com/{snippet.get('customUrl', 'channel/' + channel_id)}"
-
-            res_php = enviar_a_php_con_session(driver, PHP_ENDPOINT, {
-                'token': TOKEN_SECRET,
-                'action': 'obtener_o_crear_podcast',
-                'nombre': nombre_canal,
-                'channel_url': channel_url,
-                'image_url': image_url
-            })
-
-            podcast_id = res_php.get('podcast_id')
-            if not podcast_id:
-                logger.error(
-                    f"  ❌ Error en PHP al registrar el podcast: {res_php}")
-                stats["errores"] += 1
-                continue
-
-            stats["podcasts"] += 1
-
-            # Sincronización general de subidas del canal de YouTube
-            yt_playlist_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId={uploads_id}&maxResults=50&key={API_KEY}"
-            raw_playlist = obtener_json_con_selenium(driver, yt_playlist_url)
-            res_playlist = json.loads(raw_playlist)
-
-            video_ids = [item['snippet']['resourceId']['videoId']
-                         for item in res_playlist.get('items', [])]
-            if not video_ids:
-                continue
-
-            yt_videos_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,liveStreamingDetails&id={','.join(video_ids)}&key={API_KEY}"
-            raw_videos = obtener_json_con_selenium(driver, yt_videos_url)
-            res_videos = json.loads(raw_videos)
-
-            for video in res_videos.get('items', []):
-                yt_id = video['id']
-                titulo = video['snippet']['title']
-
-                if not cumple_filtros(titulo, permitidas, bloqueadas):
-                    continue
-
-                is_live = video['snippet'].get(
-                    'liveBroadcastContent') == 'live'
-                duration_iso = video['contentDetails'].get('duration', '')
-                segundos = duracion_a_segundos(duration_iso)
-
-                if not is_live and segundos < 300:
-                    continue
-
-                duracion_hms = "00:00:00" if is_live else iso8601_a_hhmmss(
-                    duration_iso)
-                status = 'LIVE' if is_live else 'PUBLISHED'
-
-                utc_dt = datetime.strptime(
-                    video["snippet"]["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"
-                ).replace(tzinfo=ZoneInfo("UTC"))
-                chile_dt = utc_dt.astimezone(ZoneInfo("America/Santiago"))
-                publish_date = chile_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-                resp_insert = enviar_a_php_con_session(driver, PHP_ENDPOINT, {
-                    'token': TOKEN_SECRET,
-                    'action': 'guardar_episodio',
-                    'youtube_id': yt_id,
-                    'podcast_id': podcast_id,
-                    'title': titulo,
-                    'duration': duracion_hms,
-                    'status': status,
-                    'publish_date': publish_date
-                })
-
-                logger.info(
-                    f"  -> Video canal {yt_id}: {resp_insert.get('status')} ({resp_insert.get('message', '')})")
-                stats["episodios"] += 1
-                if resp_insert.get("status") == "error":
-                    stats["errores"] += 1
-
-                # 3. Sincronización inteligente utilizando la playlist global ya extraída
-        # =========================================================================
-        # 2. SINCRONIZACIÓN DE LA PLAYLIST GENERAL (Se hace UNA SOLA VEZ al final)
-        # =========================================================================
-        if PLAYLIST_URL:
-            logger.info(f"📋 Sincronizando playlist general de pendientes...")
-            videos_yt = obtener_videos_playlist_api(PLAYLIST_URL, API_KEY)
-            playlist_ids_general = {
-                v["youtube_id"].strip(): v for v in videos_yt}
-
-            if len(playlist_ids_general) == 0:
-                logger.warning(
-                    "⚠️ ADVERTENCIA: La playlist general devolvió 0 videos. Omitiendo sincronización.")
-            else:
-                logger.info(
-                    f"  ✅ Se encontraron {len(playlist_ids_general)} videos en la playlist general.")
-                sincronizar_playlist_global(
-                    driver, PHP_ENDPOINT, playlist_ids_general
-                )
-
-            # ==========================================
-            # AL FINALIZAR TODO EL PROCESO DE SINCRONIZACIÓN:
-            # ==========================================
-            enviar_a_php_con_session(driver, PHP_ENDPOINT, {
-                'token': TOKEN_SECRET,
-                'action': 'registrar_fin_sincronizacion'
-            })
-
-            enviar_mensaje_telegram(f"✅ Sincronización de podcasts finalizada.\n\n📊 Estadísticas:\n- Episodios procesados: {stats['episodios']}\n- Errores: {stats['errores']}")
+        enviar_mensaje_telegram(
+            "✅ Sincronización finalizada.\n"
+            f"- Videos en playlist: {stats['episodios']}\n"
+            f"- Cambios aplicados: {stats['actualizados']}\n"
+            f"- Errores: {stats['errores']}")
 
     except Exception as e:
         estado = "ERROR"
         mensaje = f"{type(e).__name__}: {e}"
         logger.exception("Error no controlado durante la ejecución")
+        enviar_mensaje_telegram(f"❌ Error en la sincronización: {mensaje}")
         raise
 
     finally:
-        logger.info("🔒 Cerrando navegador Selenium...")
-        driver.quit()
-        fin = datetime.now(ZoneInfo("America/Santiago"))
+        if driver:
+            logger.info("🔒 Cerrando navegador Selenium...")
+            driver.quit()
+        fin = datetime.now(TZ_CHILE)
         guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     procesar()
