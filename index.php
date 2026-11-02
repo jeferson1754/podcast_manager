@@ -3,7 +3,6 @@ include('bd.php');
 
 // Manejo seguro de variables para navegación
 $podcast    = $podcast    ?? 'podcasts';
-$temporadas = $temporadas ?? 'temporadas';
 $episodios  = $episodios  ?? 'episodios';
 $calendario = $calendario ?? 'calendario';
 $año        = $año        ?? date('Y');
@@ -362,9 +361,6 @@ $section = $_GET['section'] ?? $podcast;
                         <a class="nav-link <?php echo ($section == $podcast) ? 'active' : ''; ?>" href="index.php?section=<?= $podcast ?>">Podcasts</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link <?php echo ($section == $temporadas) ? 'active' : ''; ?>" href="index.php?section=<?= $temporadas ?>">Temporadas</a>
-                    </li>
-                    <li class="nav-item">
                         <a class="nav-link <?php echo ($section == $episodios) ? 'active' : ''; ?>" href="index.php?section=<?= $episodios ?>">Episodios</a>
                     </li>
                     <li class="nav-item">
@@ -521,103 +517,6 @@ $section = $_GET['section'] ?? $podcast;
                         </tbody>
                     </table>
                 </div>
-
-                <!-- TABLA TEMPORADAS -->
-            <?php elseif ($section == $temporadas): ?>
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h5 class="mb-0 text-dark fw-bold"><i class="fas fa-layer-group me-2 text-primary"></i>Gestión de Temporadas</h5>
-                        <p class="text-muted small mb-0">Agrega nuevas temporadas para los podcasts actuales conservando el historial de las anteriores.</p>
-                    </div>
-                </div>
-
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle">
-                        <thead>
-                            <tr>
-                                <th style="width: 60px;">#ID</th>
-                                <th style="width: 80px;">Logo</th>
-                                <th>Podcast</th>
-                                <th>Temporada</th>
-                                <th class="text-center">Episodios</th>
-                                <th class="text-end">Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php
-                            // Consulta para listar todas las temporadas trayendo la imagen del podcast y la heredada del canal
-                            $sql = "SELECT s.*, p.title as podcast_title, p.image as podcast_image, c.image as channel_image,
-                                   (SELECT COUNT(*) FROM episodes e WHERE e.season_id = s.id) as total_episodios
-                            FROM seasons s 
-                            JOIN podcasts p ON s.podcast_id = p.id 
-                            LEFT JOIN channels c ON p.channel_id = c.id
-                            ORDER BY p.title, s.number DESC";
-
-                            $result = $conn->query($sql);
-                            if ($result && $result->num_rows > 0):
-                                while ($season = $result->fetch_assoc()):
-                                    // Lógica de herencia: Prioriza la imagen del podcast; si está vacía, usa la del canal
-                                    $imagen_a_mostrar = !empty($season['podcast_image']) ? $season['podcast_image'] : $season['channel_image'];
-                            ?>
-                                    <tr>
-                                        <td class="fw-semibold text-muted"><?= $season['id']; ?></td>
-                                        <td>
-
-                                            <?php if (!empty($imagen_a_mostrar)): ?>
-                                                <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>"
-                                                    alt="Logo"
-                                                    class="img-thumb-preview rounded"
-                                                    onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='flex';">
-
-                                                <!-- Este div se queda oculto (display: none) y solo se muestra si la imagen de arriba falla -->
-                                                <div class="img-thumb-preview align-items-center justify-content-center bg-light text-muted rounded"
-                                                    style="display: none;">
-                                                    <i class="fas fa-image"></i>
-                                                </div>
-                                            <?php else: ?>
-                                                <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
-                                                    <i class="fas fa-image"></i>
-                                                </div>
-                                            <?php endif; ?>
-
-                                        </td>
-                                        <td class="fw-semibold text-dark"><?= htmlspecialchars($season['podcast_title']); ?></td>
-                                        <td>
-                                            <span class="badge bg-light text-dark border px-2 py-1">
-                                                <i class="fas fa-layer-group me-1 text-muted"></i>
-                                                <?= 'Temporada ' . $season['number'] ?: htmlspecialchars($season['title']); ?>
-                                            </span>
-                                        </td>
-                                        <td class="text-center">
-                                            <span class="badge bg-primary bg-opacity-10 text-primary px-2 py-1">
-                                                <i class="fas fa-headphones me-1"></i> <?= $season['total_episodios']; ?>
-                                            </span>
-                                        </td>
-                                        <td class="text-end">
-                                            <a href="edit.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-primary me-1 border" title="Editar">
-                                                <i class="fas fa-pen"></i> Editar
-                                            </a>
-                                            <a href="delete.php?type=temporadas&id=<?= $season['id']; ?>" class="btn btn-sm btn-light text-danger border" onclick="return confirm('¿Estás seguro de eliminar esta temporada? Los episodios asociados podrían verse afectados.')" title="Eliminar">
-                                                <i class="fas fa-trash"></i> Eliminar
-                                            </a>
-                                        </td>
-                                    </tr>
-                                <?php endwhile; ?>
-                            <?php else: ?>
-                                <tr>
-                                    <td colspan="6" class="text-center py-4">
-                                        <div class="empty-state">
-                                            <i class="fas fa-layer-group fa-2x mb-2 text-muted"></i>
-                                            <h5>Sin Temporadas registradas</h5>
-                                            <p class="small text-muted">Agrega temporadas para organizar tus episodios.</p>
-                                        </div>
-                                    </td>
-                                </tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
-                </div>
-
                 <!-- VISTA DE EPISODIOS CON FILTRO Y CAMBIO DE VISTA -->
             <?php elseif ($section == $episodios): ?>
                 <?php
@@ -634,16 +533,23 @@ $section = $_GET['section'] ?? $podcast;
                             END ASC, 
                             e.publish_date DESC");
                 $episodes_list = [];
+                $total_pendientes = 0;
+
                 if ($result && $result->num_rows > 0) {
                     while ($row = $result->fetch_assoc()) {
                         $episodes_list[] = $row;
+                        // Contamos cuántos están pendientes de forma global
+                        if (($row['status'] ?? '') === 'PENDING') {
+                            $total_pendientes++;
+                        }
                     }
                 }
+                $total_general = count($episodes_list);
                 ?>
 
-                <!-- Barra de Herramientas: Búsqueda y Selector de Vista -->
-                <div class="row g-3 align-items-center mb-4">
-                    <div class="col-md-6 col-lg-8">
+                <!-- Barra de Herramientas: Búsqueda, Contadores y Selector de Vista -->
+                <div class="row g-3 align-items-center mb-3">
+                    <div class="col-md-6 col-lg-7">
                         <div class="input-group">
                             <span class="input-group-text bg-white border-end-0 text-muted">
                                 <i class="fas fa-search"></i>
@@ -651,7 +557,18 @@ $section = $_GET['section'] ?? $podcast;
                             <input type="text" id="searchEpisode" class="form-control border-start-0 ps-0" placeholder="Buscar por título de capítulo o podcast...">
                         </div>
                     </div>
-                    <div class="col-md-6 col-lg-4 d-flex justify-content-md-end">
+                    <div class="col-md-6 col-lg-5 d-flex justify-content-md-end align-items-center gap-3 flex-wrap">
+                        <!-- Indicadores de Totales -->
+                        <div class="d-flex align-items-center gap-2 small text-muted">
+                            <span class="badge bg-warning text-dark px-2 py-1">
+                                <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> Pendientes: <strong id="countPendientes"><?= $total_pendientes; ?></strong>
+                            </span>
+                            <span class="badge bg-light text-dark border px-2 py-1">
+                                Mostrando: <strong id="countVisible"><?= $total_general; ?></strong> de <?= $total_general; ?>
+                            </span>
+                        </div>
+
+                        <!-- Botones de Vista -->
                         <div class="btn-group" role="group" aria-label="Cambiar vista">
                             <button type="button" class="btn btn-outline-secondary active" id="btnViewGrid" title="Vista Tarjetas">
                                 <i class="fas fa-th-large me-1"></i> Tarjetas
@@ -697,18 +614,14 @@ $section = $_GET['section'] ?? $podcast;
                                             <?php
                                             $fechaEpisodio = date('Y-m-d', strtotime($episode['publish_date']));
                                             $hoy = date('Y-m-d');
-                                            $status = $episode['status'] ?? ''; // Aseguramos que lea el status
+                                            $status = $episode['status'] ?? '';
 
-                                            // Condición 1: Si es un directo de hoy con duración 00:00:00 -> Círculo Rojo (En vivo)
                                             if ($fechaEpisodio === $hoy && $episode['duration'] === '00:00:00'):
                                             ?>
                                                 <span class="badge bg-danger text-white px-2 py-1">
                                                     <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> En vivo
                                                 </span>
-                                            <?php
-                                            // Condición 2: Si el estado es PENDING -> Círculo Naranja
-                                            elseif ($status === 'PENDING'):
-                                            ?>
+                                            <?php elseif ($status === 'PENDING'): ?>
                                                 <span class="badge bg-warning text-dark px-2 py-1" title="Pendiente en playlist">
                                                     <i class="fas fa-circle me-1 text-orange" style="font-size: 6px; vertical-align: middle;"></i> Pendiente
                                                 </span>
@@ -719,11 +632,9 @@ $section = $_GET['section'] ?? $podcast;
 
                                         <div class="episode-podcast-info d-flex align-items-center gap-1 flex-wrap small text-muted">
                                             <?php
-                                            // Normalizamos los textos para comparar sin importar tildes o mayúsculas/minúsculas extra
                                             $canal_limpio = trim(mb_strtolower($episode['channel_name'] ?? ''));
                                             $podcast_limpio = trim(mb_strtolower($episode['podcast_title'] ?? ''));
 
-                                            // Si el canal existe y es distinto al podcast, lo mostramos primero
                                             if (!empty($canal_limpio) && $canal_limpio !== $podcast_limpio):
                                             ?>
                                                 <span class="fw-semibold">
@@ -732,12 +643,10 @@ $section = $_GET['section'] ?? $podcast;
                                                 <span>•</span>
                                             <?php endif; ?>
 
-                                            <!-- Podcast -->
                                             <span class="text-dark fw-medium">
                                                 <i class="fas fa-podcast text-primary"></i> <?= htmlspecialchars($episode['podcast_title']); ?>
                                             </span>
                                             <span>•</span>
-                                            <!-- Temporada -->
                                             <span class="badge bg-light text-dark border">
                                                 Temporada <?= $episode['season_number']; ?>
                                             </span>
@@ -758,7 +667,7 @@ $section = $_GET['section'] ?? $podcast;
                     </div>
 
                     <!-- 2. VISTA LISTA (Tabla Oculta inicialmente) -->
-                    <div id="episodesListView" class="table-responsive d-none">
+                    <div id="episodesListView" class="table-responsive d-none mt-4">
                         <table class="table table-hover align-middle">
                             <thead>
                                 <tr>
@@ -857,6 +766,42 @@ $section = $_GET['section'] ?? $podcast;
                         <p class="small">Comienza publicando episodios en tus podcast existentes.</p>
                     </div>
                 <?php endif; ?>
+
+                <!-- Script para actualizar dinámicamente el contador de resultados de búsqueda -->
+                <script>
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const searchInput = document.getElementById('searchEpisode');
+                        const countVisible = document.getElementById('countVisible');
+
+                        if (searchInput) {
+                            searchInput.addEventListener('input', function() {
+                                const query = this.value.toLowerCase().trim();
+                                const items = document.querySelectorAll('.episode-item');
+                                let visibles = 0;
+
+                                items.forEach(item => {
+                                    const searchData = item.getAttribute('data-search') || '';
+                                    // Como las tarjetas y la vista de lista comparten los mismos .episode-item, 
+                                    // agrupamos por ID o evaluamos de forma única por cada episodio real.
+                                    // Aquí evaluamos la coincidencia:
+                                    if (searchData.includes(query)) {
+                                        item.style.display = '';
+                                        visibles++;
+                                    } else {
+                                        item.style.display = 'none';
+                                    }
+                                });
+
+                                // Como tenemos duplicados los elementos en Grid y List, dividimos entre 2 si ambos están renderizados,
+                                // o ajustamos según tu script de filtrado actual. Actualizamos el texto del contador:
+                                if (countVisible) {
+                                    // Si tu script de JS ya oculta las vistas por separado, esto reflejará el total real de elementos únicos visibles
+                                    countVisible.textContent = Math.round(visibles / 2);
+                                }
+                            });
+                        }
+                    });
+                </script>
 
                 <!-- CALENDARIO -->
             <?php elseif ($section == $calendario):

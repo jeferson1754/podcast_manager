@@ -13,6 +13,52 @@ if ($conn->connect_error) {
     die('Connection Error');
 }
 
+// Si se solicita crear una temporada mediante AJAX desde la edición
+if (isset($_POST['action']) && $_POST['action'] === 'crear_temporada_ajax') {
+    header('Content-Type: application/json');
+    $podcast_id = (int) $_POST['podcast_id'];
+
+    // 1. 🛡️ VALIDACIÓN CRÍTICA: Comprobar que el podcast realmente existe en la BD
+    $podcast_check = consultar($conn, "SELECT id FROM podcasts WHERE id = ?", 'i', [$podcast_id]);
+
+    if (empty($podcast_check)) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'El podcast especificado no existe o fue eliminado.'
+        ]);
+        exit;
+    }
+
+    // 2. Si el podcast existe, procedemos a calcular el siguiente número de temporada
+    $res = consultar($conn, "SELECT MAX(number) as max_num FROM seasons WHERE podcast_id = ?", 'i', [$podcast_id]);
+    $siguiente_numero = ($res[0]['max_num'] ?? 0) + 1;
+    $titulo_nuevo = "Temporada " . $siguiente_numero;
+
+    // 3. Insertamos la nueva temporada
+    $ok = ejecutar(
+        $conn,
+        "INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)",
+        'iis',
+        [$podcast_id, $siguiente_numero, $titulo_nuevo]
+    );
+
+    if ($ok) {
+        $nuevo_id = $conn->insert_id;
+        echo json_encode([
+            'success' => true,
+            'id' => $nuevo_id,
+            'number' => $siguiente_numero,
+            'title' => $titulo_nuevo
+        ]);
+    } else {
+        echo json_encode([
+            'success' => false,
+            'message' => 'No se pudo crear la temporada en la base de datos.'
+        ]);
+    }
+    exit;
+}
+
 // ------------------------------------------------------------------
 // CONSTANTES DE VALIDACIÓN
 // ------------------------------------------------------------------
@@ -296,11 +342,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        $mensajeExito = ''; // Inicializamos la variable de éxito
+
         if ($ok) {
-            header('Location: index.php?section=' . urlencode($type));
-            exit;
-        }
-        if (!$errores) {
+            $mensajeExito = '¡Los cambios se han guardado correctamente!';
+            // Opcional: si es un formulario de edición y quieres refrescar los datos 
+            // que ve el usuario con los nuevos valores recién guardados:
+            // $registro = ... (recargar datos si es necesario)
+        } elseif (!$errores) {
             $errorGeneral = 'No se pudo guardar los cambios. Inténtalo de nuevo.';
         }
     }
@@ -320,8 +369,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="container mt-5">
         <h2>Editar <?= h(ucfirst($type)) ?></h2>
 
-        <?php if ($errorGeneral): ?>
-            <div class="alert alert-danger"><?= h($errorGeneral) ?></div>
+        <?php if (!empty($mensajeExito)): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                <i class="fas fa-check-circle me-2"></i><?= h($mensajeExito) ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        <?php endif; ?>
+
+        <?php if (!empty($errorGeneral)): ?>
+            <div class="alert alert-danger" role="alert">
+                <i class="fas fa-exclamation-triangle me-2"></i><?= h($errorGeneral) ?>
+            </div>
         <?php endif; ?>
 
         <form action="" method="post">
@@ -363,14 +421,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="mb-3">
                     <label class="form-label" for="season_id">Temporada</label>
-                    <select class="form-select<?= isset($errores['season_id']) ? ' is-invalid' : '' ?>" id="season_id" name="season_id" required>
-                        <?php foreach ($listaTemporadas as $s): ?>
-                            <option value="<?= (int) $s['id'] ?>" <?= (string) ($form['season_id'] ?? '') === (string) $s['id'] ? 'selected' : '' ?>>
-                                <?= h($s['title'] . ' Temporada ' . $s['number']) ?>
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
+                    <div class="input-group">
+                        <select class="form-select<?= isset($errores['season_id']) ? ' is-invalid' : '' ?>" id="season_id" name="season_id" required>
+                            <?php foreach ($listaTemporadas as $s): ?>
+                                <option value="<?= (int) $s['id'] ?>" <?= (string) ($form['season_id'] ?? '') === (string) $s['id'] ? 'selected' : '' ?>>
+                                    <?= h($s['title'] . ' Temporada ' . $s['number']) ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <!-- Botón para abrir el modal de nueva temporada -->
+                        <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#modalNuevaTemporada" title="Crear nueva temporada">
+                            <i class="fas fa-plus"></i> Nueva
+                        </button>
+                    </div>
                     <div class="invalid-feedback"><?= h($errores['season_id'] ?? '') ?></div>
+                </div>
+
+                <div class="modal fade" id="modalNuevaTemporada" tabindex="-1" aria-labelledby="modalLabel" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="modalLabel">Crear Nueva Temporada</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="text-muted mb-0">¿Deseas crear la siguiente temporada automáticamente para este podcast?</p>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                                <button type="button" class="btn btn-primary" id="btnCrearTemporadaAjax">Sí, crear</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <?php campo('N° Capitulo', 'number', 'number', $form, $errores, 'min="0" max="' . NUMERO_MAX . '" step="1"'); ?>
@@ -419,6 +501,81 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </form>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        const btnCrearTemporada = document.getElementById('btnCrearTemporadaAjax');
+
+        if (btnCrearTemporada) {
+            btnCrearTemporada.addEventListener('click', function() {
+
+                const podcastId = <?= (int) $registro['podcast_id'] ?>;
+
+                const formData = new FormData();
+                formData.append('action', 'crear_temporada_ajax');
+                formData.append('podcast_id', podcastId);
+
+                // Evitar múltiples clics mientras se procesa
+                btnCrearTemporada.disabled = true;
+
+                fetch('edit.php?type=episodios&id=<?= (int) $id ?>', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Error HTTP: ' + response.status);
+                        }
+
+                        return response.json();
+                    })
+                    .then(data => {
+
+                        if (data.success) {
+
+                            const select = document.getElementById('season_id');
+
+                            if (!select) {
+                                throw new Error('No se encontró el selector season_id');
+                            }
+
+                            // Crear nueva opción
+                            const option = document.createElement('option');
+                            option.value = data.id;
+                            option.textContent = data.title + ' Temporada ' + data.number;
+                            option.selected = true;
+
+                            // Agregar y seleccionar automáticamente
+                            select.appendChild(option);
+                            select.value = data.id;
+
+                            // Cerrar modal
+                            const modalEl = document.getElementById('modalNuevaTemporada');
+
+                            if (modalEl) {
+                                const modal = bootstrap.Modal.getInstance(modalEl);
+                                if (modal) {
+                                    modal.hide();
+                                }
+                            }
+
+                        } else {
+                            alert(data.message || 'No se pudo crear la temporada.');
+                        }
+
+                    })
+                    .catch(error => {
+                        console.error('Error al crear temporada:', error);
+                        alert('Ocurrió un error al crear la temporada.');
+                    })
+                    .finally(() => {
+                        btnCrearTemporada.disabled = false;
+                    });
+
+            });
+        }
+    </script>
+
+
 </body>
 
 </html>

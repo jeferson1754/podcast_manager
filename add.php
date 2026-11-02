@@ -7,44 +7,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         die('Connection Error');
     }
     if ($type == $podcast) {
-        $channel_id = $_POST['channel_id']; // Nuevo campo de canal
+        $channel_id = $_POST['channel_id'];
         $title = $_POST['title'];
         $image = $_POST['image'];
         $link = $_POST['link'];
         $state = $_POST['state'];
 
-        // Insertamos el podcast vinculado al channel_id
+        // 1. Insertamos el podcast vinculado al channel_id
         $stmt = $conn->prepare("INSERT INTO podcasts (channel_id, title, image, description, state) VALUES (?, ?, ?, ?, ?)");
         $stmt->bind_param("issss", $channel_id, $title, $image, $link, $state);
         $stmt->execute();
+
+        // Obtenemos el ID del podcast recién creado
+        $podcast_id = $conn->insert_id;
         $stmt->close();
-    } elseif ($type == $temporadas) {
-        $podcast_id = $_POST['podcast_id'];
-        $number = $_POST['number'];
-        $title = $_POST['title'] ?? ('Temporada ' . $number);
 
-        $stmt = $conn->prepare("SELECT id FROM seasons WHERE podcast_id = ? AND number = ?");
-        $stmt->bind_param("ii", $podcast_id, $number);
-        $stmt->execute();
-        $result = $stmt->get_result();
+        // 2. 🚀 Creamos automáticamente su Temporada 1 por defecto
+        $season_number = 1;
+        $season_title = 'Temporada 1';
 
-        if ($result->num_rows > 0) {
-            $row = $result->fetch_assoc();
-            $season_id = $row['id'];
-            $stmt->close();
-
-            $stmtUpdate = $conn->prepare("UPDATE seasons SET title = ? WHERE id = ?");
-            $stmtUpdate->bind_param("si", $title, $season_id);
-            $stmtUpdate->execute();
-            $stmtUpdate->close();
-        } else {
-            $stmt->close();
-
-            $stmtInsert = $conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)");
-            $stmtInsert->bind_param("iis", $podcast_id, $number, $title);
-            $stmtInsert->execute();
-            $stmtInsert->close();
-        }
+        $stmtSeason = $conn->prepare("INSERT INTO seasons (podcast_id, number, title) VALUES (?, ?, ?)");
+        $stmtSeason->bind_param("iis", $podcast_id, $season_number, $season_title);
+        $stmtSeason->execute();
+        $stmtSeason->close();
     } elseif ($type == $episodios) {
         $season_id = $_POST['season_id'];
         $number = $_POST['number'];
@@ -130,32 +115,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <option value="Finalizado">Finalizado</option>
                     </select>
                 </div>
-            <?php elseif ($type == $temporadas):
-                $result = $conn2->query("SELECT podcasts.id, podcasts.title, COALESCE(MAX(seasons.number), 0) + 1 AS number FROM podcasts LEFT JOIN seasons ON seasons.podcast_id = podcasts.id GROUP BY podcasts.id, podcasts.title;");
-            ?>
-                <div class="mb-3">
-                    <label class="form-label">Podcast</label>
-                    <select class="form-select" name="podcast_id" id="podcastSelect" required onchange="actualizarTemporada()">
-                        <option value="" disabled selected>Selecciona un podcast</option>
-                        <?php while ($pod = $result->fetch_assoc()): ?>
-                            <option value="<?php echo $pod['id']; ?>" data-number="<?php echo $pod['number']; ?>">
-                                <?php echo htmlspecialchars($pod['title']); ?>
-                            </option>
-                        <?php endwhile; ?>
-                    </select>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Número de Temporada (+1)</label>
-                    <input type="number" class="form-control" name="number" min="1" id="seasonNumber" required>
-                </div>
-                <script>
-                    function actualizarTemporada() {
-                        const select = document.getElementById('podcastSelect');
-                        const selectedOption = select.options[select.selectedIndex];
-                        const nextSeasonNumber = selectedOption.getAttribute('data-number');
-                        document.getElementById('seasonNumber').value = nextSeasonNumber;
-                    }
-                </script>
+
 
             <?php elseif ($type == $episodios):
                 $result = $conn2->query("
