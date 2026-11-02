@@ -106,7 +106,43 @@ try {
 
         responder(['status' => 'updated', 'message' => 'Estado actualizado exitosamente']);
     }
+    if ($action === 'obtener_todos_podcasts') {
+        $stmt = $pdo->prepare("
+ SELECT p.id, p.title, p.description as link, p.image, c.name AS channel_name 
+            FROM podcasts p 
+            LEFT JOIN channels c ON p.channel_id = c.id;
+        ");
+        $stmt->execute();
+        $podcasts = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        responder(['status' => 'ok', 'podcasts' => $podcasts]);
+    }
+
+    if ($action === 'obtener_todos_podcasts') {
+        $stmt = $pdo->prepare("
+            SELECT p.id, p.title, p.description as link, p.image, c.name AS channel_name 
+            FROM podcasts p 
+            LEFT JOIN channels c ON p.channel_id = c.id;
+        ");
+        $stmt->execute();
+        $podcasts = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        responder(['status' => 'ok', 'podcasts' => $podcasts]);
+    }
+
+    if ($action === 'actualizar_imagen_podcast') {
+        // Usamos param() para capturarlo sin importar si viene por POST o GET
+        $podcast_id = (int) param('podcast_id');
+        $nueva_imagen = trim(param('image'));
+
+        $stmt = $conn->prepare("UPDATE podcasts SET image = ? WHERE id = ?");
+        $stmt->bind_param("si", $nueva_imagen, $podcast_id);
+        $stmt->execute();
+        $stmt->close();
+
+        echo json_encode(['success' => true]);
+        exit;
+    }
     // ------------------------------------------------------------------
     // Actualizar duración (HH:MM:SS)
     // ------------------------------------------------------------------
@@ -343,7 +379,6 @@ try {
     }
 
     responder(['status' => 'error', 'message' => 'Acción no válida']);
-
 } catch (Throwable $e) {
     http_response_code(500);
     responder(['status' => 'error', 'message' => 'Error en acción ' . $action . ': ' . $e->getMessage()]);

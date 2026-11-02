@@ -70,6 +70,76 @@ def guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje=""):
     logger.info("=" * 70)
 
 
+def revisar_y_actualizar_caratulas(driver, php_endpoint, API_KEY):
+    """Consulta los podcasts en la BD, verifica si la miniatura de YouTube cambió y la actualiza si es necesario."""
+    
+    # 1. Traer todos los podcasts de la BD a través de tu endpoint PHP
+    res_db = enviar_a_php_con_session(driver, php_endpoint, {
+        'token': TOKEN_SECRET,
+        'action': 'obtener_todos_podcasts' # Asegúrate de tener este action en PHP
+    })
+    
+    podcasts = res_db.get('podcasts', []) if isinstance(res_db, dict) else []
+    if not podcasts:
+        logger.info("⚠️ No se encontraron podcasts en la base de datos para revisar carátulas.")
+        return
+
+    youtube = build("youtube", "v3", developerKey=API_KEY)
+    logger.info("🎨 Iniciando verificación de portadas de podcasts con la BD...")
+
+    for pod in podcasts:
+        podcast_id = pod.get('id')
+        link_playlist = pod.get('link') # Aquí guardas el link o ID de la playlist (ej: https://www.youtube.com/playlist?list=...)
+        imagen_actual_bd = pod.get('image') # La URL de la portada que actualmente está guardada en la BD
+
+        if not link_playlist:
+            continue
+
+        # Extraer el ID de la playlist del link
+        playlist_id = link_playlist
+        if "list=" in link_playlist:
+            match = re.search(r'[?&]list=([a-zA-Z0-9_-]+)', link_playlist)
+            if match:
+                playlist_id = match.group(1)
+
+        try:
+            # Consultar la información actual a la API de YouTube
+            request = youtube.playlists().list(part="snippet", id=playlist_id)
+            response = request.execute()
+            items = response.get("items", [])
+
+            if items:
+                thumbnails = items[0].get("snippet", {}).get("thumbnails", {})
+                # Obtener la mejor calidad disponible en YouTube
+                nueva_imagen_url = None
+                for calidad in ["maxres", "standard", "high", "medium", "default"]:
+                    if calidad in thumbnails:
+                        nueva_imagen_url = thumbnails[calidad]["url"]
+                        break
+
+                # 🛡️ VALIDACIÓN: Comparar la imagen de YouTube con la que tenemos en la BD
+                if nueva_imagen_url and nueva_imagen_url != imagen_actual_bd:
+                    logger.info(f"🔄 La portada del podcast ID {podcast_id} ha cambiado en YouTube. Actualizando...")
+                    
+                    # Enviar la orden de actualización a PHP
+                    res_update = enviar_a_php_con_session(driver, php_endpoint, {
+                        'token': TOKEN_SECRET,
+                        'action': 'actualizar_imagen_podcast',
+                        'podcast_id': podcast_id,
+                        'image': nueva_imagen_url
+                    })
+                    
+                    print(f"Respuesta PHP para actualización de imagen {podcast_id}: {res_update}")
+                    logger.info(f"✅ Carátula actualizada con éxito para el podcast {podcast_id}")
+                else:
+                    # Si es idéntica, no hacemos nada (ahorramos procesos)
+                    pass
+
+        except Exception as e:
+            logger.error(f"⚠️ Error al verificar la miniatura del podcast ID {podcast_id}: {e}")
+
+    logger.info("🎉 Verificación de carátulas finalizada.")
+
 def utc_a_chile(raw):
     """'2025-01-31T22:00:00Z' (UTC) -> 'YYYY-MM-DD HH:MM:SS' (America/Santiago)."""
     if not raw:
@@ -219,10 +289,12 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
             if inicio and live.get("actualEndTime"):
                 info["actual_start_time"] = inicio
                 info["es_directo_finalizado"] = True
-                info["publish_date"] = inicio   # fecha = HORA DE INICIO del directo
+                # fecha = HORA DE INICIO del directo
+                info["publish_date"] = inicio
 
     # 3. Imagen de cada canal (1 unidad de cuota por lote de 50 canales)
-    canales = sorted({v["channel_id"] for v in item_map.values() if v["channel_id"]})
+    canales = sorted({v["channel_id"]
+                     for v in item_map.values() if v["channel_id"]})
     imagenes = {}
     for i in range(0, len(canales), 50):
         resp = youtube.channels().list(
@@ -245,7 +317,8 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
     logger.info("📋 Sincronizando playlist designada...")
 
     if not playlist_ids:
-        logger.warning("⚠️ Playlist vacía. Se omite para evitar falsos PUBLISHED.")
+        logger.warning(
+            "⚠️ Playlist vacía. Se omite para evitar falsos PUBLISHED.")
         return
 
     res_db = enviar_a_php_con_session(driver, php_endpoint, {
@@ -300,7 +373,8 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
 
         # 1c. Duración (si estaba en 0 y ahora ya existe)
         if (ep.get("duration") in (None, "", "00:00:00")) and v["duration"] != "00:00:00":
-            logger.info(f"  ⏱️ Duración actualizada: {v['title']} ({v['duration']})")
+            logger.info(
+                f"  ⏱️ Duración actualizada: {v['title']} ({v['duration']})")
             enviar_a_php_con_session(driver, php_endpoint, {
                 "token": TOKEN_SECRET,
                 "action": "actualizar_duracion",
@@ -326,12 +400,14 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
                     stats["actualizados"] += 1
                 else:
                     stats["errores"] += 1
-                    logger.error(f"  ❌ Error actualizando fecha de {yt_id}: {res}")
+                    logger.error(
+                        f"  ❌ Error actualizando fecha de {yt_id}: {res}")
 
     # 2. Los que salieron de la playlist -> PUBLISHED
     for yt_id, ep in db_map.items():
         if yt_id not in playlist_ids and ep.get("status") != "PUBLISHED":
-            logger.info(f"  ✅ Salió de la playlist (PUBLISHED): {ep.get('title', yt_id)}")
+            logger.info(
+                f"  ✅ Salió de la playlist (PUBLISHED): {ep.get('title', yt_id)}")
             enviar_a_php_con_session(driver, php_endpoint, {
                 "token": TOKEN_SECRET,
                 "action": "actualizar_estado",
@@ -380,6 +456,8 @@ def procesar():
             f"- Videos en playlist: {stats['episodios']}\n"
             f"- Cambios aplicados: {stats['actualizados']}\n"
             f"- Errores: {stats['errores']}")
+        
+        revisar_y_actualizar_caratulas(driver, PHP_ENDPOINT, API_KEY)
 
     except Exception as e:
         estado = "ERROR"
