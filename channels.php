@@ -28,11 +28,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $channel_id = (int) ($_POST['channel_id'] ?? 0);
             $podcast_id = (int) ($_POST['podcast_id'] ?? 0);
 
+            if ($channel_id <= 0 || $podcast_id <= 0) {
+                throw new Exception('Selección inválida');
+            }
+
             $stmt = $conn->prepare("UPDATE podcasts SET channel_id = ? WHERE id = ?");
             $stmt->bind_param("ii", $channel_id, $podcast_id);
             $stmt->execute();
             $stmt->close();
             $msg = 'vinculado';
+        } elseif ($accion === 'desvincular_podcast') {
+            $podcast_id = (int) ($_POST['podcast_id'] ?? 0);
+            if ($podcast_id <= 0) {
+                throw new Exception('Podcast inválido');
+            }
+
+            $stmt = $conn->prepare("UPDATE podcasts SET channel_id = NULL WHERE id = ?");
+            $stmt->bind_param("i", $podcast_id);
+            $stmt->execute();
+            $stmt->close();
+            $msg = 'desvinculado';
         } elseif ($accion === 'editar_canal') {
             $id        = (int) ($_POST['id'] ?? 0);
             $name      = trim($_POST['name'] ?? '');
@@ -156,6 +171,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $mensajes = [
     'creado'     => ['success', 'Canal creado correctamente.'],
     'vinculado'  => ['success', 'Podcast vinculado al canal.'],
+    'desvinculado' => ['success', 'Podcast quitado del canal (el podcast y sus episodios siguen intactos).'],
     'actualizado' => ['success', 'Canal actualizado correctamente.'],
     'eliminado'  => ['success', 'Canal eliminado. Sus podcasts quedaron sin canal asignado.'],
     'fusionado'  => ['success', 'Canales fusionados: los podcasts se movieron al canal destino y el canal origen fue eliminado.'],
@@ -172,6 +188,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
     <title>Gestión de Canales y Podcasts</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/css/tom-select.bootstrap5.min.css" rel="stylesheet">
     <style>
         .img-thumb-preview {
             width: 45px;
@@ -241,29 +258,91 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                     </div>
                     <div class="card-body">
                         <?php
-                        $channels_opt = $conn2->query("SELECT id, name FROM channels ORDER BY name ASC");
-                        $podcasts_opt = $conn2->query("SELECT id, title FROM podcasts ORDER BY title ASC");
+                        // Canales con su cantidad de podcasts (los que no tienen ninguno, primero)
+                        $canales_sin = [];
+                        $canales_con = [];
+                        $q = $conn->query("SELECT c.id, c.name, c.youtube_channel_id, COUNT(p.id) AS n
+                                           FROM channels c
+                                           LEFT JOIN podcasts p ON p.channel_id = c.id
+                                           GROUP BY c.id, c.name, c.youtube_channel_id
+                                           ORDER BY c.name ASC, c.id ASC");
+                        if ($q) {
+                            while ($r = $q->fetch_assoc()) {
+                                if ((int) $r['n'] === 0) {
+                                    $canales_sin[] = $r;
+                                } else {
+                                    $canales_con[] = $r;
+                                }
+                            }
+                        }
+
+                        // Podcasts: primero los que aún no tienen canal
+                        $pods_sin = [];
+                        $pods_con = [];
+                        $canal_actual = []; // podcast_id => nombre del canal actual
+                        $q = $conn->query("SELECT p.id, p.title, p.channel_id, c.name AS channel_name
+                                           FROM podcasts p
+                                           LEFT JOIN channels c ON c.id = p.channel_id
+                                           ORDER BY p.title ASC");
+                        if ($q) {
+                            while ($r = $q->fetch_assoc()) {
+                                if (empty($r['channel_id']) || empty($r['channel_name'])) {
+                                    $pods_sin[] = $r;
+                                    $canal_actual[$r['id']] = null;
+                                } else {
+                                    $pods_con[] = $r;
+                                    $canal_actual[$r['id']] = $r['channel_name'] . ' (#' . $r['channel_id'] . ')';
+                                }
+                            }
+                        }
                         ?>
-                        <form action="channels.php" method="post">
+                        <form action="channels.php" method="post" id="form-asignar">
                             <input type="hidden" name="accion" value="asignar_podcast">
+
                             <div class="mb-3">
-                                <label class="form-label">Seleccionar Canal</label>
-                                <select class="form-select" name="channel_id" required>
-                                    <option value="" disabled selected>Elige un canal</option>
-                                    <?php while ($ch = $channels_opt->fetch_assoc()): ?>
-                                        <option value="<?= $ch['id']; ?>"><?= htmlspecialchars($ch['name']); ?> (#<?= $ch['id']; ?>)</option>
-                                    <?php endwhile; ?>
+                                <label class="form-label fw-semibold">1. Podcast</label>
+                                <select name="podcast_id" id="sel-podcast" required placeholder="Busca un podcast…">
+                                    <option value="">Busca un podcast…</option>
+                                    <?php if ($pods_sin): ?>
+                                        <optgroup label="Sin canal asignado">
+                                            <?php foreach ($pods_sin as $r): ?>
+                                                <option value="<?= (int) $r['id']; ?>"><?= htmlspecialchars($r['title']); ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endif; ?>
+                                    <?php if ($pods_con): ?>
+                                        <optgroup label="Ya tienen canal (se moverán)">
+                                            <?php foreach ($pods_con as $r): ?>
+                                                <option value="<?= (int) $r['id']; ?>"><?= htmlspecialchars($r['title']); ?> — <?= htmlspecialchars($r['channel_name']); ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endif; ?>
                                 </select>
                             </div>
-                            <div class="mb-3">
-                                <label class="form-label">Seleccionar Podcast</label>
-                                <select class="form-select" name="podcast_id" required>
-                                    <option value="" disabled selected>Elige un podcast</option>
-                                    <?php while ($pod = $podcasts_opt->fetch_assoc()): ?>
-                                        <option value="<?= $pod['id']; ?>"><?= htmlspecialchars($pod['title']); ?></option>
-                                    <?php endwhile; ?>
+
+                            <div class="mb-2">
+                                <label class="form-label fw-semibold">2. Canal</label>
+                                <select name="channel_id" id="sel-canal" required placeholder="Busca un canal…">
+                                    <option value="">Busca un canal…</option>
+                                    <?php if ($canales_sin): ?>
+                                        <optgroup label="Canales sin podcasts">
+                                            <?php foreach ($canales_sin as $r): ?>
+                                                <option value="<?= (int) $r['id']; ?>"><?= htmlspecialchars($r['name']); ?> · #<?= (int) $r['id']; ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endif; ?>
+                                    <?php if ($canales_con): ?>
+                                        <optgroup label="Canales con podcasts">
+                                            <?php foreach ($canales_con as $r): ?>
+                                                <option value="<?= (int) $r['id']; ?>"><?= htmlspecialchars($r['name']); ?> · #<?= (int) $r['id']; ?> · <?= (int) $r['n']; ?> podcast(s)</option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endif; ?>
                                 </select>
                             </div>
+
+                            <div id="info-asignacion" class="small text-muted mb-3" style="min-height: 1.4em;"></div>
+
                             <button type="submit" class="btn btn-primary w-100">
                                 <i class="fas fa-exchange-alt me-1"></i> Vincular Podcast
                             </button>
@@ -292,7 +371,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                                 <tbody>
                                     <?php
                                     $sql_channels = "SELECT c.id AS channel_id, c.name AS channel_name, c.image AS channel_image,
-                                                            c.youtube_channel_id AS yt_id, p.title AS podcast_title
+                                                            c.youtube_channel_id AS yt_id, p.title AS podcast_title, p.id AS podcast_id
                                                      FROM channels c
                                                      LEFT JOIN podcasts p ON p.channel_id = c.id
                                                      ORDER BY c.name ASC, c.id ASC";
@@ -309,7 +388,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                                                 $channels_grouped[$cid]['podcasts'] = [];
                                             }
                                             if ($row['podcast_title']) {
-                                                $channels_grouped[$cid]['podcasts'][] = $row['podcast_title'];
+                                                $channels_grouped[$cid]['podcasts'][] = ['id' => (int) $row['podcast_id'], 'title' => $row['podcast_title']];
                                             }
                                         }
                                     }
@@ -342,10 +421,16 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                                                 <td class="align-middle">
                                                     <?php if ($nPodcasts > 0): ?>
                                                         <div class="d-flex flex-wrap gap-1">
-                                                            <?php foreach ($data['podcasts'] as $p_title): ?>
-                                                                <span class="badge bg-light text-dark border px-2 py-1">
-                                                                    <i class="fas fa-podcast text-muted me-1"></i> <?= htmlspecialchars($p_title); ?>
-                                                                </span>
+                                                            <?php foreach ($data['podcasts'] as $pod): ?>
+                                                                <form action="channels.php" method="post" class="d-inline"
+                                                                    onsubmit="return confirm('¿Quitar «<?= htmlspecialchars(addslashes($pod['title']), ENT_QUOTES); ?>» de este canal?\nEl podcast y sus episodios no se borran.');">
+                                                                    <input type="hidden" name="accion" value="desvincular_podcast">
+                                                                    <input type="hidden" name="podcast_id" value="<?= (int) $pod['id']; ?>">
+                                                                    <span class="badge bg-light text-dark border px-2 py-1 d-inline-flex align-items-center gap-1">
+                                                                        <i class="fas fa-podcast text-muted"></i> <?= htmlspecialchars($pod['title']); ?>
+                                                                        <button type="submit" class="btn-close ms-1" style="font-size: .5rem;" title="Quitar de este canal" aria-label="Quitar de este canal"></button>
+                                                                    </span>
+                                                                </form>
                                                             <?php endforeach; ?>
                                                         </div>
                                                     <?php else: ?>
@@ -537,6 +622,40 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
             document.getElementById('edit-aplicar-wrap').classList.toggle('d-none', b.dataset.podcasts === '0');
             actualizarPreview();
         });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/tom-select@2.3.1/dist/js/tom-select.complete.min.js"></script>
+    <script>
+        const canalActual = <?= json_encode($canal_actual ?? new stdClass(), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+        const infoAsignacion = document.getElementById('info-asignacion');
+
+        const tsCanal = new TomSelect('#sel-canal', {
+            maxOptions: null,
+            allowEmptyOption: false,
+            onChange: mostrarResumen
+        });
+        const tsPodcast = new TomSelect('#sel-podcast', {
+            maxOptions: null,
+            allowEmptyOption: false,
+            onChange: mostrarResumen
+        });
+
+        function mostrarResumen() {
+            const pod = tsPodcast.getValue();
+            const can = tsCanal.getValue();
+            if (!pod) {
+                infoAsignacion.textContent = '';
+                return;
+            }
+            const actual = canalActual[pod];
+            const nombreCanal = can ? tsCanal.options[can].text.split(' · ')[0] : null;
+            let texto = actual ?
+                'Actualmente en: ' + actual + '.' :
+                'Este podcast aún no tiene canal.';
+            if (nombreCanal) {
+                texto += ' Quedará en: ' + nombreCanal + '.';
+            }
+            infoAsignacion.textContent = texto;
+        }
     </script>
 </body>
 
