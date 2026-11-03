@@ -2,6 +2,7 @@ import os
 import re
 import time
 import logging
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,6 +24,25 @@ PLAYLIST_URL = os.getenv(
     "https://www.youtube.com/playlist?list=PL4wOdIekMghnJXO-_gOclIXiiZyPhhsxQ",
 )
 TZ_CHILE = ZoneInfo("America/Santiago")
+
+# ------------------------------------------------------------------
+# CANALES CON MÁS DE UN PODCAST (DINÁMICO)
+# ------------------------------------------------------------------
+# No hay que editar nada aquí para agregar un canal nuevo: al inicio de cada
+# ejecución se leen los podcasts de la BD, y todo canal que tenga 2 o más
+# podcasts se detecta solo. Un video pertenece al podcast cuyo título aparece
+# en el título del video (p. ej. "... | Quantum AM #3" -> podcast "Quantum AM").
+# Si ninguno aparece, los videos nuevos van al podcast por defecto: el 'Activo'
+# más antiguo del canal (el mismo criterio que usa el PHP).
+#
+# Se llena en runtime: clave = nombre o channel_id de YouTube normalizado.
+PODCASTS_POR_CANAL = {}
+
+# OPCIONAL: alias para cuando los videos no escriben el título completo del
+# podcast. Clave: título del podcast (minúsculas, sin espacios). Valor: lista
+# de regex extra. Normalmente se deja vacío.
+#   ALIAS_PODCASTS = {"quantumam": [r"\bQAM\b"]}
+ALIAS_PODCASTS = {}
 
 # ------------------------------------------------------------------
 # LOGGING
@@ -70,18 +90,120 @@ def guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje=""):
     logger.info("=" * 70)
 
 
+def _clave_canal(valor):
+    """Normaliza un nombre o ID de canal para compararlo (sin espacios, minúsculas)."""
+    return re.sub(r"\s+", "", str(valor or "")).lower()
+
+
+def _sin_acentos(texto):
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", str(texto or ""))
+        if not unicodedata.combining(c))
+
+
+def _patron_podcast(nombre):
+    """'Quantum AM' -> regex que acepta 'Quantum AM', 'quantum am', 'QuantumAM'."""
+    tokens = [re.escape(t) for t in _sin_acentos(nombre).split()]
+    return r"(?<!\w)" + r"\s*".join(tokens) + r"(?!\w)"
+
+
+def construir_config_podcasts(podcasts):
+    """
+    A partir de la lista de podcasts de la BD arma la configuración de los
+    canales que tienen 2 o más. Devuelve {clave_canal: {"default", "reglas"}}.
+    """
+    por_canal = {}
+    for p in podcasts:
+        if p.get("channel_db_id") is None or not (p.get("title") or "").strip():
+            continue
+        por_canal.setdefault(str(p["channel_db_id"]), []).append(p)
+
+    config = {}
+    for lista in por_canal.values():
+        if len(lista) < 2:
+            continue
+        # Mismo criterio del PHP: primero 'Activo', luego el más antiguo
+        lista.sort(key=lambda p: (str(p.get("state") or "") != "Activo",
+                                  int(p.get("id") or 0)))
+        reglas = []
+        for p in lista:
+            titulo = p["title"].strip()
+            patrones = [_patron_podcast(titulo)]
+            patrones += ALIAS_PODCASTS.get(_clave_canal(titulo), [])
+            for patron in patrones:
+                reglas.append((re.compile(patron, re.IGNORECASE), titulo))
+        cfg = {"default": lista[0]["title"].strip(), "reglas": reglas}
+
+        claves = {_clave_canal(lista[0].get("youtube_channel_id")),
+                  _clave_canal(lista[0].get("channel_name"))}
+        for clave in claves - {""}:
+            config[clave] = cfg
+    return config
+
+
+def cargar_podcasts_por_canal(driver, php_endpoint):
+    """Lee los podcasts de la BD y deja lista PODCASTS_POR_CANAL. No es fatal si falla."""
+    res = enviar_a_php_con_session(driver, php_endpoint, {
+        "token": TOKEN_SECRET,
+        "action": "obtener_todos_podcasts",
+    })
+    if not isinstance(res, dict) or res.get("status") != "ok":
+        logger.warning(
+            f"⚠️ No se pudieron leer los podcasts para detectar canales "
+            f"con varios podcasts: {res}")
+        return
+
+    config = construir_config_podcasts(res.get("podcasts", []))
+    PODCASTS_POR_CANAL.clear()
+    PODCASTS_POR_CANAL.update(config)
+
+    for cfg in {id(c): c for c in config.values()}.values():
+        nombres = [n for n in dict.fromkeys(n for _, n in cfg["reglas"])]
+        logger.info(
+            f"🎙️ Canal con varios podcasts detectado: {nombres} "
+            f"(por defecto: {cfg['default']})")
+
+
+def detectar_podcast(channel_id, channel_name, title, usar_default=True):
+    """
+    Devuelve el nombre del podcast según el título, o None si el canal tiene
+    un solo podcast (no está en PODCASTS_POR_CANAL).
+    Si el título menciona varios podcasts, gana el que aparece más al final
+    (la etiqueta suele ir al final: "... | Quantum AM #3"); a igual posición,
+    el de nombre más largo.
+    Con usar_default=False solo devuelve un podcast si el título lo indica
+    explícitamente.
+    """
+    cfg = (PODCASTS_POR_CANAL.get(_clave_canal(channel_id))
+           or PODCASTS_POR_CANAL.get(_clave_canal(channel_name)))
+    if not cfg:
+        return None
+
+    texto = _sin_acentos(title)
+    mejor = None
+    for patron, nombre in cfg["reglas"]:
+        for m in patron.finditer(texto):
+            clave = (m.end(), m.end() - m.start())
+            if mejor is None or clave > mejor[0]:
+                mejor = (clave, nombre)
+    if mejor:
+        return mejor[1]
+    return cfg["default"] if usar_default else None
+
+
 def revisar_y_actualizar_caratulas(driver, php_endpoint, API_KEY):
     """Consulta los podcasts en la BD, verifica si la miniatura de YouTube cambió y la actualiza si es necesario."""
-    
+
     # 1. Traer todos los podcasts de la BD a través de tu endpoint PHP
     res_db = enviar_a_php_con_session(driver, php_endpoint, {
         'token': TOKEN_SECRET,
-        'action': 'obtener_todos_podcasts' # Asegúrate de tener este action en PHP
+        'action': 'obtener_todos_podcasts'  # Asegúrate de tener este action en PHP
     })
-    
+
     podcasts = res_db.get('podcasts', []) if isinstance(res_db, dict) else []
     if not podcasts:
-        logger.info("⚠️ No se encontraron podcasts en la base de datos para revisar carátulas.")
+        logger.info(
+            "⚠️ No se encontraron podcasts en la base de datos para revisar carátulas.")
         return
 
     youtube = build("youtube", "v3", developerKey=API_KEY)
@@ -89,8 +211,10 @@ def revisar_y_actualizar_caratulas(driver, php_endpoint, API_KEY):
 
     for pod in podcasts:
         podcast_id = pod.get('id')
-        link_playlist = pod.get('link') # Aquí guardas el link o ID de la playlist (ej: https://www.youtube.com/playlist?list=...)
-        imagen_actual_bd = pod.get('image') # La URL de la portada que actualmente está guardada en la BD
+        # Aquí guardas el link o ID de la playlist (ej: https://www.youtube.com/playlist?list=...)
+        link_playlist = pod.get('link')
+        # La URL de la portada que actualmente está guardada en la BD
+        imagen_actual_bd = pod.get('image')
 
         if not link_playlist:
             continue
@@ -119,8 +243,9 @@ def revisar_y_actualizar_caratulas(driver, php_endpoint, API_KEY):
 
                 # 🛡️ VALIDACIÓN: Comparar la imagen de YouTube con la que tenemos en la BD
                 if nueva_imagen_url and nueva_imagen_url != imagen_actual_bd:
-                    logger.info(f"🔄 La portada del podcast ID {podcast_id} ha cambiado en YouTube. Actualizando...")
-                    
+                    logger.info(
+                        f"🔄 La portada del podcast ID {podcast_id} ha cambiado en YouTube. Actualizando...")
+
                     # Enviar la orden de actualización a PHP
                     res_update = enviar_a_php_con_session(driver, php_endpoint, {
                         'token': TOKEN_SECRET,
@@ -128,17 +253,21 @@ def revisar_y_actualizar_caratulas(driver, php_endpoint, API_KEY):
                         'podcast_id': podcast_id,
                         'image': nueva_imagen_url
                     })
-                    
-                    print(f"Respuesta PHP para actualización de imagen {podcast_id}: {res_update}")
-                    logger.info(f"✅ Carátula actualizada con éxito para el podcast {podcast_id}")
+
+                    print(
+                        f"Respuesta PHP para actualización de imagen {podcast_id}: {res_update}")
+                    logger.info(
+                        f"✅ Carátula actualizada con éxito para el podcast {podcast_id}")
                 else:
                     # Si es idéntica, no hacemos nada (ahorramos procesos)
                     pass
 
         except Exception as e:
-            logger.error(f"⚠️ Error al verificar la miniatura del podcast ID {podcast_id}: {e}")
+            logger.error(
+                f"⚠️ Error al verificar la miniatura del podcast ID {podcast_id}: {e}")
 
     logger.info("🎉 Verificación de carátulas finalizada.")
+
 
 def utc_a_chile(raw):
     """'2025-01-31T22:00:00Z' (UTC) -> 'YYYY-MM-DD HH:MM:SS' (America/Santiago)."""
@@ -261,6 +390,7 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
                 "duration": "00:00:00",
                 "actual_start_time": None,
                 "es_directo_finalizado": False,
+                "podcast_name": None,   # se completa más abajo
             }
 
         page_token = resp.get("nextPageToken")
@@ -305,12 +435,50 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
             imagenes[c["id"]] = img.get("url", "")
     for v in item_map.values():
         v["channel_image"] = imagenes.get(v["channel_id"], "")
+        # Podcast según el título (solo canales con más de un podcast)
+        v["podcast_name"] = detectar_podcast(
+            v["channel_id"], v["channel_name"], v["title"])
 
     return item_map
 
 # ------------------------------------------------------------------
 # SINCRONIZACIÓN CON LA BD (vía PHP)
 # ------------------------------------------------------------------
+
+
+def corregir_podcasts(driver, php_endpoint, db_map, stats):
+    """
+    Reasigna al podcast correcto los episodios cuyo título lo indica, estén o
+    no en la playlist (incluye los ya PUBLISHED). Va en orden cronológico para
+    que la numeración en el podcast destino quede ordenada.
+    """
+    episodios = sorted(db_map.values(),
+                       key=lambda e: str(e.get("publish_date") or ""))
+    for ep in episodios:
+        esperado = detectar_podcast(
+            (ep.get("channel_youtube_id") or "").strip(),
+            (ep.get("channel_name") or "").strip(),
+            ep.get("title"),
+            usar_default=False,   # solo mueve si el título lo dice explícitamente
+        )
+        actual = (ep.get("podcast_title") or "").strip().lower()
+        if not esperado or esperado.strip().lower() == actual:
+            continue
+
+        res = enviar_a_php_con_session(driver, php_endpoint, {
+            "token": TOKEN_SECRET,
+            "action": "actualizar_podcast",
+            "youtube_id": str(ep["youtube_id"]).strip(),
+            "podcast_name": esperado,
+        })
+        if res.get("status") == "success":
+            logger.info(
+                f"  🎙️ {ep.get('podcast_title')} -> {esperado}: {ep.get('title')}")
+            stats["actualizados"] += 1
+        else:
+            stats["errores"] += 1
+            logger.error(
+                f"  ❌ Error moviendo podcast de {ep['youtube_id']}: {res}")
 
 
 def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
@@ -352,6 +520,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
                 "duration": v["duration"],
                 "status": "PENDING",
                 "publish_date": v["publish_date"],
+                "podcast_name": v.get("podcast_name") or "",
             })
             if res.get("status") in ("inserted", "updated"):
                 stats["actualizados"] += 1
@@ -416,6 +585,9 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
             })
             stats["actualizados"] += 1
 
+    # 3. Corregir podcast de episodios (nuevos y antiguos) según su título
+    corregir_podcasts(driver, php_endpoint, db_map, stats)
+
 # ------------------------------------------------------------------
 # PROCESO PRINCIPAL
 # ------------------------------------------------------------------
@@ -440,6 +612,9 @@ def procesar():
         driver.get(PHP_ENDPOINT)
         time.sleep(3)
 
+        # Detecta canales con varios podcasts leyendo la BD (sin config manual)
+        cargar_podcasts_por_canal(driver, PHP_ENDPOINT)
+
         playlist_ids = obtener_videos_playlist_api(PLAYLIST_URL, API_KEY)
         stats["episodios"] = len(playlist_ids)
         logger.info(f"  ✅ {len(playlist_ids)} videos en la playlist.")
@@ -456,7 +631,7 @@ def procesar():
             f"- Videos en playlist: {stats['episodios']}\n"
             f"- Cambios aplicados: {stats['actualizados']}\n"
             f"- Errores: {stats['errores']}")
-        
+
         revisar_y_actualizar_caratulas(driver, PHP_ENDPOINT, API_KEY)
 
     except Exception as e:
