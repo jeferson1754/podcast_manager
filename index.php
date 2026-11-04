@@ -1,1107 +1,611 @@
 <?php
 include('bd.php');
+require_once 'sesion.php';
+require_once 'helpers.php';
+require_once 'horarios.php';
 
-// Manejo seguro de variables para navegación
-$podcast    = $podcast    ?? 'podcasts';
-$episodios  = $episodios  ?? 'episodios';
-$calendario = $calendario ?? 'calendario';
-$año        = $año        ?? date('Y');
 
+// Sección: solo valores conocidos (lista blanca)
 $section = $_GET['section'] ?? $podcast;
+if (!is_string($section) || !in_array($section, [$podcast, $episodios, $calendario], true)) {
+    $section = $podcast;
+}
+
+// ------------------------------------------------------------------
+// Acción: recalcular horarios del calendario (POST + CSRF)
+// ------------------------------------------------------------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['accion'] ?? '') === 'recalcular_horarios') {
+    csrf_exigir();
+    $n = recalcular_horarios($conn);
+    flash_set('success', "Horarios recalculados para $n podcast(s).");
+    header('Location: index.php?section=' . urlencode($calendario));
+    exit;
+}
+
+// ------------------------------------------------------------------
+// Utilidades de presentación
+// ------------------------------------------------------------------
+function img_logo(?string $src, string $icono = 'fa-image'): void
+{
+    if (!empty($src)) { ?>
+        <img src="<?= h($src) ?>" alt="Logo" class="img-thumb-preview rounded" loading="lazy" referrerpolicy="no-referrer"
+            onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        <div class="img-thumb-preview align-items-center justify-content-center bg-light text-muted rounded" style="display:none;">
+            <i class="fas <?= h($icono) ?>"></i>
+        </div>
+    <?php } else { ?>
+        <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
+            <i class="fas <?= h($icono) ?>"></i>
+        </div>
+    <?php }
+}
+
+/** Botón de eliminar: formulario POST con token CSRF y confirmación. */
+function boton_borrar(string $type, int $id, string $confirmacion, bool $conTexto = true, string $extraClase = 'border'): string
+{
+    $js = h(json_encode($confirmacion, JSON_UNESCAPED_UNICODE));
+    return '<form method="post" action="delete.php" class="d-inline" onsubmit="return confirm(' . $js . ')">'
+        . csrf_field()
+        . '<input type="hidden" name="type" value="' . h($type) . '">'
+        . '<input type="hidden" name="id" value="' . $id . '">'
+        . '<button type="submit" class="btn btn-sm btn-light text-danger ' . $extraClase . '" title="Eliminar">'
+        . '<i class="fas fa-trash' . ($conTexto ? ' me-1' : '') . '"></i>' . ($conTexto ? ' Eliminar' : '')
+        . '</button></form>';
+}
+
+function fecha_corta(?string $f): string
+{
+    $ts = $f ? strtotime($f) : false;
+    return $ts ? date('d/m/Y H:i', $ts) : '—';
+}
+
+/** Insignia de estado del episodio: en vivo / programado / pendiente / duración. */
+function badge_episodio(array $e): string
+{
+    $live = $e['live_status'] ?? 'none';
+    if ($live === 'live') {
+        return '<span class="badge bg-danger text-white px-2 py-1"><i class="fas fa-circle me-1" style="font-size:6px;vertical-align:middle;"></i> En vivo</span>';
+    }
+    if ($live === 'upcoming') {
+        return '<span class="badge bg-info text-dark px-2 py-1"><i class="far fa-calendar me-1"></i> Programado</span>';
+    }
+    if (($e['status'] ?? '') === 'PENDING') {
+        return '<span class="badge bg-warning text-dark px-2 py-1" title="Pendiente en playlist"><i class="fas fa-circle me-1" style="font-size:6px;vertical-align:middle;"></i> Pendiente</span>';
+    }
+    return '<span><i class="far fa-clock me-1"></i>' . h($e['duration'] ?? '') . '</span>';
+}
+
+function url_con(array $cambios): string
+{
+    return 'index.php?' . http_build_query(array_merge($_GET, $cambios));
+}
+
+$etiquetas = [$podcast => 'Podcast', $episodios => 'Episodio'];
+$tituloPagina = 'Podcast Manager — ' . ucfirst($section);
+
+include 'layout_header.php';
 ?>
+<div class="main-card">
+    <div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+            <h3 class="fw-bold mb-0 text-capitalize"><?= h($section) ?></h3>
+            <p class="text-muted small mb-0">Gestiona y organiza el contenido de tu plataforma</p>
+        </div>
+        <div class="d-flex gap-2">
+            <?php if ($section === $podcast): ?>
+                <a href="channels.php" class="btn btn-outline-primary d-inline-flex align-items-center gap-2">
+                    <i class="fas fa-tv"></i> <span>Gestionar Canales</span>
+                </a>
+                <a href="reclasificar.php" class="btn btn-outline-secondary d-inline-flex align-items-center gap-2" title="Mover episodios al podcast correcto cuando un canal tiene varios">
+                    <i class="fas fa-shuffle"></i> <span>Reclasificar</span>
+                </a>
+            <?php endif; ?>
+            <?php if ($section === $calendario): ?>
+                <form method="post" class="d-inline">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="accion" value="recalcular_horarios">
+                    <button class="btn btn-outline-primary d-inline-flex align-items-center gap-2" type="submit">
+                        <i class="fas fa-rotate"></i> <span>Recalcular horarios</span>
+                    </button>
+                </form>
+            <?php else: ?>
+                <a href="add.php?type=<?= urlencode($section) ?>" class="btn btn-primary d-inline-flex align-items-center gap-2">
+                    <i class="fas fa-plus"></i> <span>Nuevo <?= h($etiquetas[$section]) ?></span>
+                </a>
+            <?php endif; ?>
+        </div>
+    </div>
 
-<!DOCTYPE html>
-<html lang="es">
-
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Podcast Manager</title>
-
-    <!-- Google Fonts & FontAwesome -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-
-    <style id="app-style">
-        :root {
-            --bg-body: #f4f6f9;
-            --card-radius: 12px;
-            --primary-color: #4f46e5;
-            --primary-hover: #4338ca;
-        }
-
-        body {
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            background-color: var(--bg-body);
-            color: #1e293b;
-            min-height: 100vh;
-        }
-
-        /* Navbar */
-        .navbar {
-            background: #ffffff;
-            border-bottom: 1px solid #e2e8f0;
-            padding: 0.8rem 0;
-        }
-
-        .navbar-brand {
-            font-weight: 700;
-            color: #0f172a;
-            font-size: 1.25rem;
-        }
-
-        .nav-pills .nav-link {
-            color: #64748b;
-            font-weight: 500;
-            border-radius: 8px;
-            padding: 0.5rem 1rem;
-            transition: all 0.2s ease;
-        }
-
-        .nav-pills .nav-link:hover {
-            color: var(--primary-color);
-            background-color: #f1f5f9;
-        }
-
-        .nav-pills .nav-link.active {
-            background-color: var(--primary-color);
-            color: #ffffff !important;
-            box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);
-        }
-
-        /* Main Wrapper */
-        .main-card {
-            background: #ffffff;
-            border-radius: var(--card-radius);
-            border: 1px solid #e2e8f0;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03);
-            padding: 1.5rem;
-            margin-top: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 1.5rem;
-            padding-bottom: 1rem;
-            border-bottom: 1px solid #f1f5f9;
-        }
-
-        .btn-primary {
-            background-color: var(--primary-color);
-            border-color: var(--primary-color);
-            border-radius: 8px;
-            font-weight: 500;
-            padding: 0.5rem 1rem;
-        }
-
-        .btn-primary:hover {
-            background-color: var(--primary-hover);
-            border-color: var(--primary-hover);
-        }
-
-        /* Table Styling */
-        .table {
-            vertical-align: middle;
-        }
-
-        .table th {
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #64748b;
-            font-weight: 600;
-            border-bottom-width: 1px;
-            background-color: #f8fafc;
-        }
-
-        .img-thumb-preview {
-            width: 50px;
-            height: 50px;
-            object-fit: cover;
-            border-radius: 8px;
-            border: 1px solid #e2e8f0;
-        }
-
-        /* TARJETAS DE EPISODIOS AMPLIADAS */
-        .episode-card {
-            border: 1px solid #e2e8f0;
-            border-radius: var(--card-radius);
-            overflow: hidden;
-            background: #ffffff;
-            transition: all 0.2s ease-in-out;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .episode-card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 20px -5px rgba(0, 0, 0, 0.08);
-            border-color: #cbd5e1;
-        }
-
-        .episode-thumb-container {
-            position: relative;
-            width: 100%;
-            padding-top: 56.25%;
-            /* Relación de aspecto 16:9 */
-            background-color: #0f172a;
-        }
-
-        .episode-thumb {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .episode-body {
-            padding: 1.25rem;
-            display: flex;
-            flex-direction: column;
-            flex-grow: 1;
-        }
-
-        .episode-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: #0f172a;
-            line-height: 1.4;
-            margin-bottom: 0.5rem;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-
-        .episode-meta {
-            font-size: 0.85rem;
-            color: #64748b;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 0.75rem;
-        }
-
-        .episode-podcast-info {
-            background-color: #f8fafc;
-            border: 1px solid #f1f5f9;
-            border-radius: 8px;
-            padding: 0.5rem 0.75rem;
-            font-size: 0.85rem;
-            font-weight: 500;
-            color: #334155;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-bottom: 1rem;
-        }
-
-        /* Badges de estado */
-        .badge-state {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 0.35em 0.75em;
-            font-size: 0.8rem;
-            font-weight: 600;
-            border-radius: 20px;
-            cursor: pointer;
-            text-decoration: none;
-            transition: opacity 0.2s;
-        }
-
-        .state-active {
-            background-color: #dcfce7;
-            color: #166534;
-        }
-
-        .state-inactive {
-            background-color: #fef3c7;
-            color: #92400e;
-        }
-
-        .state-finished {
-            background-color: #f1f5f9;
-            color: #475569;
-        }
-
-        /* Calendario */
-        .schedule-card {
-            border-radius: var(--card-radius);
-            border: 1px solid #e2e8f0;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-
-        .schedule-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
-        }
-
-        .schedule-card.is-today {
-            border: 2px solid var(--primary-color);
-        }
-
-        /* Empty State */
-        .empty-state {
-            text-align: center;
-            padding: 4rem 1rem;
-            color: #94a3b8;
-        }
-
-        .empty-state i {
-            font-size: 3.5rem;
-            margin-bottom: 1rem;
-            color: #cbd5e1;
-        }
-
-        .footer {
-            text-align: center;
-            padding: 1.5rem;
-            font-size: 0.875rem;
-            color: #94a3b8;
-        }
-
-        .badge.bg-warning i.fa-circle {
-            color: #fd7e14 !important;
-            /* Naranja fuerte */
-        }
-    </style>
-</head>
-
-<body>
-    <!-- Navigation -->
-    <?php
-    // Consultamos los ajustes utilizando MySQLi correctamente
-    $stmtMeta = $conn->query("SELECT setting_key, setting_value FROM site_settings");
-    $meta = [];
-
-    if ($stmtMeta) {
-        while ($row = $stmtMeta->fetch_assoc()) {
-            $meta[$row['setting_key']] = $row['setting_value'];
-        }
-    }
-
-    $lastSyncRaw = $meta['last_sync'] ?? '';
-    if (!empty($lastSyncRaw) && $lastSyncRaw !== 'Nunca') {
-        $dateObj = new DateTime($lastSyncRaw);
-        $lastSync = $dateObj->format('d-m-Y h:i a');
-    } else {
-        $lastSync = 'Nunca';
-    }
-    $newCount = $meta['new_episodes_count'] ?? 0;
-    // 1. Contar episodios añadidos hoy de forma segura
-    $sqlHoy = "SELECT COUNT(*) as total FROM episodes WHERE DATE(detected_at) = CURDATE()";
-    $resHoyQuery = $conn->query($sqlHoy);
-    $episodiosHoy = 0;
-    if ($resHoyQuery && $resHoyQuery instanceof mysqli_result) {
-        $resHoy = $resHoyQuery->fetch_assoc();
-        $episodiosHoy = intval($resHoy['total'] ?? 0);
-    }
-
-    // 2. Contar episodios añadidos ayer de forma segura
-    $sqlAyer = "SELECT COUNT(*) as total FROM episodes WHERE DATE(detected_at) = CURDATE() - INTERVAL 1 DAY";
-    $resAyerQuery = $conn->query($sqlAyer);
-    $episodiosAyer = 0;
-    if ($resAyerQuery && $resAyerQuery instanceof mysqli_result) {
-        $resAyer = $resAyerQuery->fetch_assoc();
-        $episodiosAyer = intval($resAyer['total'] ?? 0);
-    }
-
-    // 3. Calcular la diferencia correctamente
-    $diferencia = $episodiosHoy - $episodiosAyer;
-    ?>
-    <nav class="navbar navbar-expand-lg bg-white border-bottom py-3 shadow-sm">
-        <div class="container">
-            <!-- Logo / Marca -->
-            <a class="navbar-brand d-flex align-items-center gap-2 fw-bold text-dark" href="index.php">
-                <i class="fas fa-podcast text-primary fs-4"></i> Podcast Manager
-            </a>
-
-            <button class="navbar-toggler border-0" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <!-- Bloque central / Indicador de estado moderno -->
-                <div class="d-flex align-items-center bg-light border px-3 py-1.5 rounded-pill shadow-xs gap-3" style="font-size: 0.85rem;">
-                    <div class="text-secondary d-flex align-items-center gap-2">
-                        <i class="fas fa-sync-alt text-primary"></i>
-                        <span>Sincronizado: <strong class="text-dark"><?= htmlspecialchars($lastSync); ?></strong></span>
-                    </div>
-
-                    <!-- Indicador comparativo -->
-                    <?php if ($episodiosHoy > 0): ?>
-                        <span class="badge bg-success rounded-pill px-2.5 py-1 fw-semibold">
-                            +<?= $episodiosHoy; ?> hoy
-                            <?php if ($diferencia > 0): ?>
-                                <span class="text-white-50">(+<?= $diferencia; ?> vs ayer)</span>
-                            <?php elseif ($diferencia < 0): ?>
-                                <span class="text-white-50">(<?= $diferencia; ?> vs ayer)</span>
-                            <?php endif; ?>
-                        </span>
-                    <?php else: ?>
-                        <span class="badge bg-secondary bg-opacity-10 text-secondary rounded-pill px-2.5 py-1 fw-normal">
-                            Sin nuevos hoy
-                        </span>
-                    <?php endif; ?>
+    <?php if ($section === $podcast): ?>
+        <?php
+        // ---------------- Resumen ----------------
+        $r = consultar($conn, "SELECT
+                (SELECT COUNT(*) FROM podcasts WHERE state = 'Activo') AS activos,
+                (SELECT COUNT(*) FROM episodes WHERE status = 'PENDING') AS pendientes,
+                (SELECT COALESCE(SUM(TIME_TO_SEC(duration)), 0) FROM episodes WHERE status = 'PENDING') AS seg_pend,
+                (SELECT COUNT(*) FROM podcasts p WHERE p.state = 'Activo' AND NOT EXISTS (
+                    SELECT 1 FROM episodes e JOIN seasons s ON s.id = e.season_id
+                    WHERE s.podcast_id = p.id AND e.publish_date >= NOW() - INTERVAL 30 DAY)) AS sin_actividad")[0] ?? [];
+        $horasPend = round(((float) ($r['seg_pend'] ?? 0)) / 3600, 1);
+        ?>
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                    <div class="stat-value"><?= (int) ($r['activos'] ?? 0) ?></div>
+                    <div class="stat-label"><i class="fas fa-podcast me-1"></i>Podcasts activos</div>
                 </div>
-
-                <!-- Pestañas de navegación alineadas a la derecha -->
-                <ul class="nav nav-pills gap-1 align-items-center ms-auto">
-                    <li class="nav-item">
-                        <a class="nav-link <?php echo ($section == $podcast) ? 'active' : ''; ?>" href="index.php?section=<?= $podcast ?>">Podcasts</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?php echo ($section == $episodios) ? 'active' : ''; ?>" href="index.php?section=<?= $episodios ?>">Episodios</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link <?php echo ($section == $calendario) ? 'active' : ''; ?>" href="index.php?section=<?= $calendario ?>">Calendario</a>
-                    </li>
-                </ul>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                    <div class="stat-value"><?= (int) ($r['pendientes'] ?? 0) ?></div>
+                    <div class="stat-label"><i class="fas fa-list-check me-1"></i>Episodios pendientes</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                    <div class="stat-value"><?= h(number_format($horasPend, 1, ',', '.')) ?> h</div>
+                    <div class="stat-label"><i class="far fa-clock me-1"></i>Por escuchar</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                    <div class="stat-value <?= ((int) ($r['sin_actividad'] ?? 0)) > 0 ? 'text-warning' : '' ?>"><?= (int) ($r['sin_actividad'] ?? 0) ?></div>
+                    <div class="stat-label"><i class="fas fa-moon me-1"></i>Activos sin episodios en 30 días</div>
+                </div>
             </div>
         </div>
-    </nav>
 
-    <!-- Main Content Container -->
-    <div class="container">
-        <div class="main-card">
-            <!-- Header Section -->
-            <div class="page-header d-flex justify-content-between align-items-center">
-                <div>
-                    <h3 class="fw-bold mb-0 text-capitalize"><?= htmlspecialchars($section); ?></h3>
-                    <p class="text-muted small mb-0">Gestiona y organiza el contenido de tu plataforma</p>
-                </div>
-                <div class="d-flex gap-2">
-                    <?php if ($section == $podcast): ?>
-                        <!-- Botón para ir a la gestión de canales -->
-                        <a href="channels.php" class="btn btn-outline-primary d-inline-flex align-items-center gap-2">
-                            <i class="fas fa-tv"></i> <span>Gestionar Canales</span>
-                        </a>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th style="width:60px;">#</th>
+                        <th style="width:80px;">Logo</th>
+                        <th>Nombre del Podcast</th>
+                        <th>Frecuencia</th>
+                        <th>Temporada</th>
+                        <th class="text-center">Episodios</th>
+                        <th>Estado</th>
+                        <th class="text-end">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php
+                    $filas = consultar($conn, "SELECT p.*, c.name AS channel_name, c.image AS channel_image,
+                            (SELECT COUNT(*) FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.podcast_id = p.id) AS total_episodios,
+                            (SELECT number FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) AS temporada_actual
+                        FROM podcasts p
+                        LEFT JOIN channels c ON p.channel_id = c.id
+                        ORDER BY p.id");
+                    if ($filas):
+                        foreach ($filas as $p):
+                            $imagen = !empty($p['image']) ? $p['image'] : $p['channel_image'];
+                    ?>
+                            <tr>
+                                <td class="fw-semibold text-muted"><?= (int) $p['id'] ?></td>
+                                <td><?php img_logo($imagen); ?></td>
+                                <td>
+                                    <a href="<?= h($p['description']) ?>" target="_blank" rel="noopener" class="fw-semibold text-dark text-decoration-none">
+                                        <?= h($p['title']) ?>
+                                    </a>
+                                    <?php if (!empty($p['channel_name']) && mb_strtolower(trim($p['channel_name'])) !== mb_strtolower(trim($p['title']))): ?>
+                                        <div class="small text-muted"><i class="fas fa-tv me-1"></i><?= h($p['channel_name']) ?></div>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if (!empty($p['frequency'])): ?>
+                                        <span class="badge bg-secondary bg-opacity-10 text-secondary border px-2 py-1">
+                                            <i class="fas fa-clock me-1"></i> <?= h($p['frequency']) ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span class="text-muted small">N/D</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <span class="badge bg-light text-dark border">
+                                        <i class="fas fa-layer-group me-1 text-muted"></i> Temporada <?= h($p['temporada_actual'] ?? '0') ?>
+                                    </span>
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge bg-primary bg-opacity-10 text-primary px-2 py-1">
+                                        <i class="fas fa-headphones me-1"></i> <?= (int) $p['total_episodios'] ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <form method="post" action="change_state.php" class="d-inline">
+                                        <?= csrf_field() ?>
+                                        <input type="hidden" name="id" value="<?= (int) $p['id'] ?>">
+                                        <div class="dropdown">
+                                            <span class="badge-state <?= estado_clase($p['state']) ?> dropdown-toggle" role="button" data-bs-toggle="dropdown">
+                                                <i class="fas fa-circle me-1" style="font-size:8px;"></i> <?= h(estado_label($p['state'])) ?>
+                                            </span>
+                                            <ul class="dropdown-menu shadow-sm border-0">
+                                                <li><button type="submit" name="state" value="Activo" class="dropdown-item">Activo</button></li>
+                                                <li><button type="submit" name="state" value="Inactivo" class="dropdown-item">Pausado</button></li>
+                                                <li><button type="submit" name="state" value="Finalizado" class="dropdown-item">Finalizado</button></li>
+                                            </ul>
+                                        </div>
+                                    </form>
+                                </td>
+                                <td class="text-end text-nowrap">
+                                    <a href="edit.php?type=podcasts&id=<?= (int) $p['id'] ?>" class="btn btn-sm btn-light text-primary me-1 border" title="Editar">
+                                        <i class="fas fa-pen"></i> Editar
+                                    </a>
+                                    <?= boton_borrar('podcasts', (int) $p['id'], '¿Eliminar el podcast «' . $p['title'] . '»? Se borrarán también sus temporadas y episodios.') ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php else: ?>
+                        <tr>
+                            <td colspan="8" class="text-center py-4">
+                                <div class="empty-state">
+                                    <i class="fas fa-podcast fa-2x mb-2 text-muted"></i>
+                                    <h5>Sin Podcasts aún</h5>
+                                    <p class="small text-muted">Haz clic en "Nuevo Podcast" para registrar tu primer contenido.</p>
+                                </div>
+                            </td>
+                        </tr>
                     <?php endif; ?>
-                    <?php if ($section !== $calendario): ?>
-                        <!-- Botón original de Nuevo elemento -->
-                        <a href="add.php?type=<?= urlencode($section); ?>" class="btn btn-primary d-inline-flex align-items-center gap-2">
-                            <i class="fas fa-plus"></i> <span>Nuevo <?= htmlspecialchars($section); ?></span>
-                        </a>
-                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+
+    <?php elseif ($section === $episodios): ?>
+        <?php
+        // ---------------- Filtros (servidor) + paginación ----------------
+        $hasLive = tiene_live_status($conn);
+        $q       = isset($_GET['q']) && is_string($_GET['q']) ? trim($_GET['q']) : '';
+        $fPod    = (int) ($_GET['podcast'] ?? 0);
+        $fEstado = $_GET['estado'] ?? '';
+        $fEstado = in_array($fEstado, ['PENDING', 'PUBLISHED', 'LIVE'], true) ? $fEstado : '';
+        $desde   = (isset($_GET['desde']) && is_string($_GET['desde']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['desde'])) ? $_GET['desde'] : '';
+        $hasta   = (isset($_GET['hasta']) && is_string($_GET['hasta']) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $_GET['hasta'])) ? $_GET['hasta'] : '';
+        $vista   = (($_GET['vista'] ?? '') === 'lista') ? 'lista' : 'tarjetas';
+        $page    = max(1, (int) ($_GET['page'] ?? 1));
+        $perPage = 24;
+
+        $where = [];
+        $tipos = '';
+        $params = [];
+        if ($q !== '') {
+            $where[] = '(e.title LIKE ? OR p.title LIKE ?)';
+            $like = '%' . $q . '%';
+            $tipos .= 'ss';
+            array_push($params, $like, $like);
+        }
+        if ($fPod > 0) {
+            $where[] = 'p.id = ?';
+            $tipos .= 'i';
+            $params[] = $fPod;
+        }
+        if ($fEstado === 'PENDING' || $fEstado === 'PUBLISHED') {
+            $where[] = 'e.status = ?';
+            $tipos .= 's';
+            $params[] = $fEstado;
+        } elseif ($fEstado === 'LIVE') {
+            $where[] = $hasLive ? "e.live_status IN ('live','upcoming')" : '1 = 0';
+        }
+        if ($desde !== '') {
+            $where[] = 'DATE(e.publish_date) >= ?';
+            $tipos .= 's';
+            $params[] = $desde;
+        }
+        if ($hasta !== '') {
+            $where[] = 'DATE(e.publish_date) <= ?';
+            $tipos .= 's';
+            $params[] = $hasta;
+        }
+        $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+        $from = "FROM episodes e
+                 JOIN seasons s ON e.season_id = s.id
+                 JOIN podcasts p ON s.podcast_id = p.id
+                 LEFT JOIN channels c ON p.channel_id = c.id";
+
+        $total = (int) (consultar($conn, "SELECT COUNT(*) AS n $from $whereSql", $tipos, $params)[0]['n'] ?? 0);
+        $paginas = max(1, (int) ceil($total / $perPage));
+        $page = min($page, $paginas);
+        $offset = ($page - 1) * $perPage;
+
+        $orden = $hasLive
+            ? "CASE WHEN e.live_status = 'live' THEN 0 WHEN e.live_status = 'upcoming' THEN 1 WHEN e.status = 'PENDING' THEN 2 ELSE 3 END"
+            : "CASE WHEN e.status = 'PENDING' THEN 2 ELSE 3 END";
+
+        $lista = consultar(
+            $conn,
+            "SELECT e.*, s.number AS season_number, p.title AS podcast_title, c.name AS channel_name
+             $from $whereSql
+             ORDER BY $orden ASC, e.publish_date DESC
+             LIMIT ? OFFSET ?",
+            $tipos . 'ii',
+            array_merge($params, [$perPage, $offset])
+        );
+        $podcastsFiltro = consultar($conn, "SELECT id, title FROM podcasts ORDER BY title");
+        $hayFiltros = ($q !== '' || $fPod > 0 || $fEstado !== '' || $desde !== '' || $hasta !== '');
+        ?>
+
+        <form method="get" class="row g-2 align-items-end mb-3">
+            <input type="hidden" name="section" value="<?= h($episodios) ?>">
+            <input type="hidden" name="vista" value="<?= h($vista) ?>">
+            <div class="col-12 col-lg-4">
+                <label class="form-label small text-muted mb-1">Buscar</label>
+                <div class="input-group">
+                    <span class="input-group-text bg-white text-muted"><i class="fas fa-search"></i></span>
+                    <input type="text" name="q" value="<?= h($q) ?>" class="form-control" placeholder="Título del capítulo o podcast...">
                 </div>
             </div>
-
-            <!-- TABLA PODCASTS -->
-            <?php if ($section == $podcast): ?>
-                <div class="table-responsive">
-                    <table class="table table-hover align-middle">
-                        <thead>
-                            <tr>
-                                <th style="width: 60px;">#</th>
-                                <th style="width: 80px;">Logo</th>
-                                <th>Nombre del Podcast</th>
-                                <th>Frecuencia</th>
-                                <th>Temporada</th>
-                                <th class="text-center">Episodios</th>
-                                <th>Estado</th>
-                                <th class="text-end">Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php
-                            // Consulta mejorada haciendo JOIN con channels y trayendo la frecuencia
-                            $sql = "SELECT p.*, c.name as channel_name, c.image as channel_image,
-                                   (SELECT COUNT(*) FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.podcast_id = p.id) as total_episodios,
-                                   (SELECT number FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) as temporada_actual
-                            FROM podcasts p 
-                            LEFT JOIN channels c ON p.channel_id = c.id
-                            ORDER BY p.id";
-
-                            $result = $conn->query($sql);
-                            if ($result && $result->num_rows > 0):
-                                while ($podcasts = $result->fetch_assoc()):
-                                    $stateClass = $podcasts['state'] === 'Activo' ? 'state-active' : ($podcasts['state'] === 'Inactivo' ? 'state-inactive' : 'state-finished');
-
-                                    // Lógica de herencia: Si el podcast no tiene imagen propia, usa la imagen del canal
-                                    $imagen_a_mostrar = !empty($podcasts['image']) ? $podcasts['image'] : $podcasts['channel_image'];
-                            ?>
-                                    <tr>
-                                        <td class="fw-semibold text-muted"><?= $podcasts['id']; ?></td>
-                                        <td>
-                                            <div class="position-relative d-inline-block">
-                                                <?php if (!empty($imagen_a_mostrar)): ?>
-                                                    <img src="<?= htmlspecialchars($imagen_a_mostrar); ?>"
-                                                        alt="Logo"
-                                                        class="img-thumb-preview rounded"
-                                                        onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='flex';">
-
-                                                    <!-- Este div se queda oculto (display: none) y solo se muestra si la imagen de arriba falla -->
-                                                    <div class="img-thumb-preview align-items-center justify-content-center bg-light text-muted rounded"
-                                                        style="display: none;">
-                                                        <i class="fas fa-image"></i>
-                                                    </div>
-                                                <?php else: ?>
-                                                    <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
-                                                        <i class="fas fa-image"></i>
-                                                    </div>
-                                                <?php endif; ?>
-                                            </div>
-                                        </td>
-                                        <td>
-                                            <a href="<?= htmlspecialchars($podcasts['description']); ?>" target="_blank" class="fw-semibold text-dark text-decoration-none">
-                                                <?= htmlspecialchars($podcasts['title']); ?>
-                                            </a>
-                                        </td>
-                                        <td>
-                                            <?php if (!empty($podcasts['frequency'])): ?>
-                                                <span class="badge bg-secondary bg-opacity-10 text-secondary border px-2 py-1">
-                                                    <i class="fas fa-clock me-1"></i> <?= htmlspecialchars($podcasts['frequency']); ?>
-                                                </span>
-                                            <?php else: ?>
-                                                <span class="text-muted small">N/D</span>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td>
-                                            <span class="badge bg-light text-dark border">
-                                                <i class="fas fa-layer-group me-1 text-muted"></i>
-                                                <?= "Temporada " . htmlspecialchars($podcasts['temporada_actual'] ?? '0'); ?>
-                                            </span>
-                                        </td>
-                                        <td class="text-center">
-                                            <span class="badge bg-primary bg-opacity-10 text-primary px-2 py-1">
-                                                <i class="fas fa-headphones me-1"></i> <?= $podcasts['total_episodios']; ?>
-                                            </span>
-                                        </td>
-                                        <td>
-                                            <form method="post" action="change_state.php" class="d-inline">
-                                                <input type="hidden" name="id" value="<?= $podcasts['id']; ?>">
-                                                <input type="hidden" name="type" value="podcast">
-                                                <div class="dropdown">
-                                                    <span class="badge-state <?= $stateClass; ?> dropdown-toggle" role="button" data-bs-toggle="dropdown">
-                                                        <i class="fas fa-circle fs-6 me-1" style="font-size: 8px !important;"></i> <?= $podcasts['state']; ?>
-                                                    </span>
-                                                    <ul class="dropdown-menu shadow-sm border-0">
-                                                        <li><button type="submit" name="state" value="Activo" class="dropdown-item">Activo</button></li>
-                                                        <li><button type="submit" name="state" value="Inactivo" class="dropdown-item">Pausado</button></li>
-                                                        <li><button type="submit" name="state" value="Finalizado" class="dropdown-item">Finalizado</button></li>
-                                                    </ul>
-                                                </div>
-                                            </form>
-                                        </td>
-                                        <td class="text-end">
-                                            <a href="edit.php?type=podcasts&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-primary me-1 border" title="Editar">
-                                                <i class="fas fa-pen"></i> Editar
-                                            </a>
-                                            <a href="delete.php?type=podcasts&id=<?= $podcasts['id']; ?>" class="btn btn-sm btn-light text-danger border" onclick="return confirm('¿Estás seguro de eliminar este podcast?')" title="Eliminar">
-                                                <i class="fas fa-trash"></i> Eliminar
-                                            </a>
-                                        </td>
-                                    </tr>
-                                <?php endwhile; ?>
-                            <?php else: ?>
-                                <tr>
-                                    <td colspan="8" class="text-center py-4">
-                                        <div class="empty-state">
-                                            <i class="fas fa-podcast fa-2x mb-2 text-muted"></i>
-                                            <h5>Sin Podcasts aún</h5>
-                                            <p class="small text-muted">Haz clic en "Nuevo Podcast" para registrar tu primer contenido.</p>
-                                        </div>
-                                    </td>
-                                </tr>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-1">Podcast</label>
+                <select name="podcast" class="form-select">
+                    <option value="0">Todos</option>
+                    <?php foreach ($podcastsFiltro as $pf): ?>
+                        <option value="<?= (int) $pf['id'] ?>" <?= $fPod === (int) $pf['id'] ? 'selected' : '' ?>><?= h($pf['title']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-1">Estado</label>
+                <select name="estado" class="form-select">
+                    <option value="">Todos</option>
+                    <option value="PENDING" <?= $fEstado === 'PENDING' ? 'selected' : '' ?>>Pendientes</option>
+                    <option value="PUBLISHED" <?= $fEstado === 'PUBLISHED' ? 'selected' : '' ?>>Publicados</option>
+                    <option value="LIVE" <?= $fEstado === 'LIVE' ? 'selected' : '' ?>>En vivo / programados</option>
+                </select>
+            </div>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-1">Desde</label>
+                <input type="date" name="desde" value="<?= h($desde) ?>" class="form-control">
+            </div>
+            <div class="col-6 col-lg-2">
+                <label class="form-label small text-muted mb-1">Hasta</label>
+                <input type="date" name="hasta" value="<?= h($hasta) ?>" class="form-control">
+            </div>
+            <div class="col-12 d-flex flex-wrap gap-2 justify-content-between align-items-center">
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary btn-sm" type="submit"><i class="fas fa-filter me-1"></i> Filtrar</button>
+                    <?php if ($hayFiltros): ?>
+                        <a class="btn btn-outline-secondary btn-sm" href="index.php?section=<?= h($episodios) ?>&vista=<?= h($vista) ?>">Limpiar</a>
+                    <?php endif; ?>
+                    <span class="text-muted small align-self-center"><?= $total ?> episodio(s)</span>
                 </div>
-                <!-- VISTA DE EPISODIOS CON FILTRO Y CAMBIO DE VISTA -->
-            <?php elseif ($section == $episodios): ?>
-                <?php
-                $result = $conn->query("SELECT e.*, s.number as season_number, p.title as podcast_title, c.name as channel_name 
-                        FROM episodes e 
-                        JOIN seasons s ON e.season_id = s.id 
-                        JOIN podcasts p ON s.podcast_id = p.id 
-                        LEFT JOIN channels c ON p.channel_id = c.id
-                        ORDER BY 
-                            CASE 
-                                WHEN e.status = 'PENDING' THEN 1
-                                WHEN DATE(e.publish_date) = CURDATE() AND e.duration = '00:00:00' THEN 2
-                                ELSE 3
-                            END ASC, 
-                            e.publish_date DESC");
-                $episodes_list = [];
-                $total_pendientes = 0;
-
-                if ($result && $result->num_rows > 0) {
-                    while ($row = $result->fetch_assoc()) {
-                        $episodes_list[] = $row;
-                        // Contamos cuántos están pendientes de forma global
-                        if (($row['status'] ?? '') === 'PENDING') {
-                            $total_pendientes++;
-                        }
-                    }
-                }
-                $total_general = count($episodes_list);
-                ?>
-
-                <!-- Barra de Herramientas: Búsqueda, Contadores y Selector de Vista -->
-                <div class="row g-3 align-items-center mb-3">
-                    <div class="col-md-6 col-lg-7">
-                        <div class="input-group">
-                            <span class="input-group-text bg-white border-end-0 text-muted">
-                                <i class="fas fa-search"></i>
-                            </span>
-                            <input type="text" id="searchEpisode" class="form-control border-start-0 ps-0" placeholder="Buscar por título de capítulo o podcast...">
-                        </div>
-                    </div>
-                    <div class="col-md-6 col-lg-5 d-flex justify-content-md-end align-items-center gap-3 flex-wrap">
-                        <!-- Indicadores de Totales -->
-                        <div class="d-flex align-items-center gap-2 small text-muted">
-                            <span class="badge bg-warning text-dark px-2 py-1">
-                                <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> Pendientes: <strong id="countPendientes"><?= $total_pendientes; ?></strong>
-                            </span>
-                            <span class="badge bg-light text-dark border px-2 py-1">
-                                Mostrando: <strong id="countVisible"><?= $total_general; ?></strong> de <?= $total_general; ?>
-                            </span>
-                        </div>
-
-                        <!-- Botones de Vista -->
-                        <div class="btn-group" role="group" aria-label="Cambiar vista">
-                            <button type="button" class="btn btn-outline-secondary active" id="btnViewGrid" title="Vista Tarjetas">
-                                <i class="fas fa-th-large me-1"></i> Tarjetas
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary" id="btnViewList" title="Vista Lista">
-                                <i class="fas fa-list me-1"></i> Lista
-                            </button>
-                        </div>
-                    </div>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Cambiar vista">
+                    <a class="btn btn-outline-secondary <?= $vista === 'tarjetas' ? 'active' : '' ?>" href="<?= h(url_con(['vista' => 'tarjetas', 'page' => 1])) ?>"><i class="fas fa-th-large me-1"></i> Tarjetas</a>
+                    <a class="btn btn-outline-secondary <?= $vista === 'lista' ? 'active' : '' ?>" href="<?= h(url_con(['vista' => 'lista', 'page' => 1])) ?>"><i class="fas fa-list me-1"></i> Lista</a>
                 </div>
+            </div>
+        </form>
 
-                <?php if (!empty($episodes_list)): ?>
-                    <!-- 1. VISTA TARJETAS (Grid) -->
-                    <div id="episodesGridView" class="row g-4">
-                        <?php foreach ($episodes_list as $episode):
-                            $searchData = strtolower($episode['title'] . ' ' . $episode['podcast_title']);
-                        ?>
-                            <div class="col-md-6 col-lg-4 episode-item" data-search="<?= htmlspecialchars($searchData); ?>">
-                                <div class="episode-card">
-                                    <div class="episode-thumb-container">
-                                        <?php if (!empty($episode['youtube_id'])): ?>
-                                            <img src="https://i.ytimg.com/vi/<?= htmlspecialchars($episode['youtube_id']); ?>/hqdefault.jpg" class="episode-thumb" alt="Miniatura">
-                                        <?php else: ?>
-                                            <div class="episode-thumb d-flex align-items-center justify-content-center text-white-50">
-                                                <i class="fas fa-play-circle fs-1"></i>
-                                            </div>
-                                        <?php endif; ?>
-                                    </div>
+        <?php if ($lista): ?>
 
-                                    <div class="episode-body">
-                                        <div class="d-flex align-items-start justify-content-between gap-2 mb-2">
-                                            <h5 class="episode-title mb-0" title="<?= htmlspecialchars($episode['title']); ?>">
-                                                <?= htmlspecialchars($episode['title']); ?>
-                                            </h5>
-                                            <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill">
-                                                Cap. <?= $episode['number']; ?>
-                                            </span>
-                                        </div>
-
-                                        <div class="episode-meta">
-                                            <span><i class="far fa-calendar-alt me-1"></i><?= date('d/m/Y H:i', strtotime($episode['publish_date'])); ?></span>
-                                            <span>•</span>
-                                            <?php
-                                            $fechaEpisodio = date('Y-m-d', strtotime($episode['publish_date']));
-                                            $hoy = date('Y-m-d');
-                                            $status = $episode['status'] ?? '';
-
-                                            if ($fechaEpisodio === $hoy && $episode['duration'] === '00:00:00'):
-                                            ?>
-                                                <span class="badge bg-danger text-white px-2 py-1">
-                                                    <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> En vivo
-                                                </span>
-                                            <?php elseif ($status === 'PENDING'): ?>
-                                                <span class="badge bg-warning text-dark px-2 py-1" title="Pendiente en playlist">
-                                                    <i class="fas fa-circle me-1 text-orange" style="font-size: 6px; vertical-align: middle;"></i> Pendiente
-                                                </span>
-                                            <?php else: ?>
-                                                <span><i class="far fa-clock me-1"></i><?= htmlspecialchars($episode['duration']); ?></span>
-                                            <?php endif; ?>
-                                        </div>
-
-                                        <div class="episode-podcast-info d-flex align-items-center gap-1 flex-wrap small text-muted">
-                                            <?php
-                                            $canal_limpio = trim(mb_strtolower($episode['channel_name'] ?? ''));
-                                            $podcast_limpio = trim(mb_strtolower($episode['podcast_title'] ?? ''));
-
-                                            if (!empty($canal_limpio) && $canal_limpio !== $podcast_limpio):
-                                            ?>
-                                                <span class="fw-semibold">
-                                                    <i class="fas fa-tv me-1"></i><?= htmlspecialchars($episode['channel_name']); ?>
-                                                </span>
-                                                <span>•</span>
-                                            <?php endif; ?>
-
-                                            <span class="text-dark fw-medium">
-                                                <i class="fas fa-podcast text-primary"></i> <?= htmlspecialchars($episode['podcast_title']); ?>
-                                            </span>
-                                            <span>•</span>
-                                            <span class="badge bg-light text-dark border">
-                                                Temporada <?= $episode['season_number']; ?>
-                                            </span>
-                                        </div>
-
-                                        <div class="mt-auto pt-2 border-top d-flex justify-content-end gap-2">
-                                            <a href="edit.php?type=<?= $episodios; ?>&id=<?= $episode['id']; ?>" class="btn btn-sm btn-light text-primary border" title="Editar">
-                                                <i class="fas fa-pen me-1"></i> Editar
-                                            </a>
-                                            <a href="delete.php?type=<?= $episodios; ?>&id=<?= $episode['id']; ?>" class="btn btn-sm btn-light text-danger border" onclick="return confirm('¿Estás seguro de eliminar este episodio?')" title="Eliminar">
-                                                <i class="fas fa-trash me-1"></i> Eliminar
-                                            </a>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        <?php endforeach; ?>
-                    </div>
-
-                    <!-- 2. VISTA LISTA (Tabla Oculta inicialmente) -->
-                    <div id="episodesListView" class="table-responsive d-none mt-4">
-                        <table class="table table-hover align-middle">
-                            <thead>
-                                <tr>
-                                    <th>Miniatura</th>
-                                    <th>Título</th>
-                                    <th>Podcast y Temporada</th>
-                                    <th>Cap.</th>
-                                    <th>Publicación</th>
-                                    <th>Duración</th>
-                                    <th class="text-end">Acciones</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($episodes_list as $episode):
-                                    $searchData = strtolower($episode['title'] . ' ' . $episode['podcast_title']);
-                                ?>
-                                    <tr class="episode-item" data-search="<?= htmlspecialchars($searchData); ?>">
-                                        <td style="width: 80px;">
-                                            <?php if (!empty($episode['youtube_id'])): ?>
-                                                <img src="https://i.ytimg.com/vi/<?= htmlspecialchars($episode['youtube_id']); ?>/mqdefault.jpg" class="img-thumb-preview" style="width:70px; height: 42px;">
-                                            <?php else: ?>
-                                                <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted" style="width:70px; height: 42px;">
-                                                    <i class="fas fa-microphone"></i>
-                                                </div>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="fw-semibold text-dark"><?= htmlspecialchars($episode['title']); ?></td>
-                                        <td>
-                                            <div class="d-flex align-items-center gap-1 flex-wrap small">
-                                                <?php
-                                                $canal_limpio = trim(mb_strtolower($episode['channel_name'] ?? ''));
-                                                $podcast_limpio = trim(mb_strtolower($episode['podcast_title'] ?? ''));
-
-                                                if (!empty($canal_limpio) && $canal_limpio !== $podcast_limpio):
-                                                ?>
-                                                    <span class="text-muted fw-semibold">
-                                                        <i class="fas fa-tv me-1"></i><?= htmlspecialchars($episode['channel_name']); ?>
-                                                    </span>
-                                                    <span class="text-muted">•</span>
-                                                <?php endif; ?>
-
-                                                <span class="fw-medium text-dark">
-                                                    <i class="fas fa-podcast text-primary"></i> <?= htmlspecialchars($episode['podcast_title']); ?>
-                                                </span>
-                                                <span class="badge bg-light text-dark border">
-                                                    T<?= $episode['season_number']; ?>
-                                                </span>
-                                            </div>
-                                        </td>
-                                        <td><span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill">Cap. <?= $episode['number']; ?></span></td>
-                                        <td class="small text-muted"><?= date('d/m/Y H:i', strtotime($episode['publish_date'])); ?></td>
-                                        <td class="small text-muted">
-                                            <?php
-                                            $fechaEpisodio = date('Y-m-d', strtotime($episode['publish_date']));
-                                            $hoy = date('Y-m-d');
-                                            $status = $episode['status'] ?? '';
-
-                                            if ($fechaEpisodio === $hoy && $episode['duration'] === '00:00:00'):
-                                            ?>
-                                                <span class="badge bg-danger text-white px-2 py-1">
-                                                    <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> En vivo
-                                                </span>
-                                            <?php elseif ($status === 'PENDING'): ?>
-                                                <span class="badge bg-warning text-dark px-2 py-1" title="Pendiente en playlist">
-                                                    <i class="fas fa-circle me-1" style="font-size: 6px; vertical-align: middle;"></i> Pendiente
-                                                </span>
-                                            <?php else: ?>
-                                                <?= htmlspecialchars($episode['duration']); ?>
-                                            <?php endif; ?>
-                                        </td>
-                                        <td class="text-end">
-                                            <a href="edit.php?type=<?= $episodios; ?>&id=<?= $episode['id']; ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar">
-                                                <i class="fas fa-pen"></i>
-                                            </a>
-                                            <a href="delete.php?type=<?= $episodios; ?>&id=<?= $episode['id']; ?>" class="btn btn-sm btn-light text-danger" onclick="return confirm('¿Estás seguro?')" title="Eliminar">
-                                                <i class="fas fa-trash"></i>
-                                            </a>
-                                        </td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <!-- Mensaje si no hay resultados tras el filtro de búsqueda -->
-                    <div id="noResultsMsg" class="empty-state d-none">
-                        <i class="fas fa-search mb-2"></i>
-                        <h5>No se encontraron coincidencias</h5>
-                        <p class="small">Intenta buscar con otros términos.</p>
-                    </div>
-
-                <?php else: ?>
-                    <div class="empty-state">
-                        <i class="fas fa-microphone-alt"></i>
-                        <h5>Sin Episodios</h5>
-                        <p class="small">Comienza publicando episodios en tus podcast existentes.</p>
-                    </div>
-                <?php endif; ?>
-
-                <!-- Script para actualizar dinámicamente el contador de resultados de búsqueda -->
-                <script>
-                    document.addEventListener('DOMContentLoaded', function() {
-                        const searchInput = document.getElementById('searchEpisode');
-                        const countVisible = document.getElementById('countVisible');
-
-                        if (searchInput) {
-                            searchInput.addEventListener('input', function() {
-                                const query = this.value.toLowerCase().trim();
-                                const items = document.querySelectorAll('.episode-item');
-                                let visibles = 0;
-
-                                items.forEach(item => {
-                                    const searchData = item.getAttribute('data-search') || '';
-                                    // Como las tarjetas y la vista de lista comparten los mismos .episode-item, 
-                                    // agrupamos por ID o evaluamos de forma única por cada episodio real.
-                                    // Aquí evaluamos la coincidencia:
-                                    if (searchData.includes(query)) {
-                                        item.style.display = '';
-                                        visibles++;
-                                    } else {
-                                        item.style.display = 'none';
-                                    }
-                                });
-
-                                // Como tenemos duplicados los elementos en Grid y List, dividimos entre 2 si ambos están renderizados,
-                                // o ajustamos según tu script de filtrado actual. Actualizamos el texto del contador:
-                                if (countVisible) {
-                                    // Si tu script de JS ya oculta las vistas por separado, esto reflejará el total real de elementos únicos visibles
-                                    countVisible.textContent = Math.round(visibles / 2);
-                                }
-                            });
-                        }
-                    });
-                </script>
-
-                <!-- CALENDARIO -->
-            <?php elseif ($section == $calendario):
-
-                // ==========================================
-                // 1. FUNCIÓN DE CÁLCULO Y ACTUALIZACIÓN AUTOMÁTICA
-                // ==========================================
-                // ==========================================
-                // FUNCIÓN PARA MÚLTIPLES HORARIOS SEMANALES
-                // ==========================================
-                function actualizarHorariosAutomaticos($conn)
-                {
-                    // Obtenemos los podcasts activos y su campo de horarios manuales personalizados
-                    $podcastsResult = $conn->query("SELECT id, schedule_custom FROM podcasts WHERE state != 'Finalizado'");
-                    if (!$podcastsResult) return;
-
-                    $dias_map_es = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
-
-                    while ($pod = $podcastsResult->fetch_assoc()) {
-                        $podcastId = $pod['id'];
-                        $scheduleCustom = trim($pod['schedule_custom'] ?? '');
-
-                        // Limpiamos los horarios previos de este podcast en la tabla schedule
-                        $stmtDel = $conn->prepare("DELETE FROM schedule WHERE podcast_id = ?");
-                        $stmtDel->bind_param("i", $podcastId);
-                        $stmtDel->execute();
-                        $stmtDel->close();
-
-                        // CASO 1: TIENE HORARIO FIJO MANUAL DEFINIDO POR TI
-                        if (!empty($scheduleCustom)) {
-                            // Ejemplo de formato esperado en $scheduleCustom: "Martes:12:00,Jueves:12:00"
-                            $bloques = explode(',', $scheduleCustom);
-                            $stmtIns = $conn->prepare("INSERT INTO schedule (podcast_id, day_of_week, start_time, is_manual) VALUES (?, ?, ?, 1)");
-
-                            foreach ($bloques as $bloque) {
-                                list($dia, $hora) = explode(':', $bloque); // Separa "Martes" y "12:00"
-                                $dia = trim($dia);
-                                $hora = trim($hora) . ':00'; // Asegura formato HH:MM:SS
-
-                                $stmtIns->bind_param("iss", $podcastId, $dia, $hora);
-                                $stmtIns->execute();
-                            }
-                            $stmtIns->close();
-
-                            // Como ya pusimos tu horario fijo, pasamos al siguiente podcast sin calcular nada
-                            continue;
-                        }
-
-                        // CASO 2: NO TIENE HORARIO FIJO, ASÍ QUE EL SCRIPT LO CALCULA AUTOMÁTICAMENTE
-                        $stmt = $conn->prepare("SELECT publish_date FROM episodes WHERE podcast_id = ? ORDER BY publish_date ASC LIMIT 20");
-                        $stmt->bind_param("i", $podcastId);
-                        $stmt->execute();
-                        $result = $stmt->get_result();
-
-                        $episodios = [];
-                        $timestamps_desc = [];
-                        while ($row = $result->fetch_assoc()) {
-                            $ts = strtotime($row['publish_date']);
-                            $episodios[] = $ts;
-                            $timestamps_desc[] = $ts;
-                        }
-
-                        if (count($episodios) < 3) continue;
-
-                        // Cálculo automático de patrones por frecuencia y repetición
-                        rsort($timestamps_desc);
-                        $patrones = [];
-                        foreach ($timestamps_desc as $timestamp) {
-                            $diaSemana = $dias_map_es[date('w', $timestamp)];
-                            $horaRedondeada = date('H:00:00', $timestamp);
-                            $key = $diaSemana . '_' . $horaRedondeada;
-
-                            if (!isset($patrones[$key])) {
-                                $patrones[$key] = ['day' => $diaSemana, 'time' => date('H:i:s', $timestamp), 'count' => 0];
-                            }
-                            $patrones[$key]['count']++;
-                        }
-
-                        usort($patrones, function ($a, $b) {
-                            return $b['count'] - $a['count'];
-                        });
-
-                        $diasRegistrados = [];
-                        $horariosValidos = [];
-                        foreach ($patrones as $p) {
-                            // Si quieres permitir múltiples días calculados, puedes ajustar esta condición
-                            if (!isset($diasRegistrados[$p['day']])) {
-                                $diasRegistrados[$p['day']] = true;
-                                $horariosValidos[] = $p;
-                            }
-                        }
-
-                        if (!empty($horariosValidos)) {
-                            $stmtIns = $conn->prepare("INSERT INTO schedule (podcast_id, day_of_week, start_time, is_manual) VALUES (?, ?, ?, 0)");
-                            foreach ($horariosValidos as $h) {
-                                $stmtIns->bind_param("iss", $podcastId, $h['day'], $h['time']);
-                                $stmtIns->execute();
-                            }
-                            $stmtIns->close();
-                        }
-                    }
-                }
-                // Ejecutar al cargar la página
-                actualizarHorariosAutomaticos($conn);
-            ?>
-
-                <div class="row g-3">
-                    <?php
-                    $dias_map = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
-                    $dia_actual = $dias_map[date('w')];
-
-                    // Orden de los días de la semana para comparar posiciones
-                    $orden_dias = ['Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado', 'Domingo'];
-                    $index_hoy = array_search($dia_actual, $orden_dias);
-
-                    $scheduleData = [];
-
-                    foreach ($orden_dias as $index_dia => $day) {
-                        $scheduleData[$day] = [];
-
-                        if ($index_dia < $index_hoy) {
-                            // ==========================================
-                            // 1. DÍAS PASADOS: Solo episodios REALES subidos
-                            // ==========================================
-                            $queryPasados = "
-                SELECT p.id AS podcast_id, p.title, p.image, 
-                       e.number AS episodio, 
-                       TIME(e.publish_date) AS start_time
-                FROM episodes e
-                JOIN seasons sn ON e.season_id = sn.id
-                JOIN podcasts p ON sn.podcast_id = p.id
-                WHERE p.state != 'Finalizado' 
-                  AND DAYNAME(e.publish_date) = 
-                      CASE '$day'
-                          WHEN 'Lunes' THEN 'Monday'
-                          WHEN 'Martes' THEN 'Tuesday'
-                          WHEN 'Miercoles' THEN 'Wednesday'
-                          WHEN 'Jueves' THEN 'Thursday'
-                          WHEN 'Viernes' THEN 'Friday'
-                          WHEN 'Sabado' THEN 'Saturday'
-                          WHEN 'Domingo' THEN 'Sunday'
-                      END
-                  AND e.publish_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-                ORDER BY e.publish_date ASC";
-
-                            $resPasados = $conn->query($queryPasados);
-                            if ($resPasados && $resPasados->num_rows > 0) {
-                                while ($item = $resPasados->fetch_assoc()) {
-                                    // Evitar duplicados si hubo más de un episodio el mismo día
-                                    $scheduleData[$day][] = $item;
-                                }
-                            }
-                        } else {
-                            // ===================================================================
-                            // 2. HOY Y DÍAS FUTUROS: Horarios programados (Fijos o calculados en schedule)
-                            // ===================================================================
-                            $queryFuturos = "
-                SELECT s.id AS schedule_id, s.day_of_week, s.start_time, p.id AS podcast_id, p.title, p.image,
-                       COALESCE(MAX(e.number) + 1, 1) AS episodio
-                FROM schedule s
-                JOIN podcasts p ON s.podcast_id = p.id
-                LEFT JOIN seasons sn ON sn.podcast_id = p.id
-                LEFT JOIN episodes e ON e.season_id = sn.id
-                WHERE p.state != 'Finalizado' AND s.day_of_week = '$day'
-                GROUP BY s.id
-                ORDER BY s.start_time;";
-
-                            $resFuturos = $conn->query($queryFuturos);
-                            if ($resFuturos && $resFuturos->num_rows > 0) {
-                                while ($item = $resFuturos->fetch_assoc()) {
-                                    $scheduleData[$day][] = $item;
-                                }
-                            }
-                        }
-                    }
-
-                    // Dibujar las tarjetas para cada día de la semana
-                    foreach ($orden_dias as $day):
-                        $isToday = ($day === $dia_actual);
+            <?php if ($vista === 'tarjetas'): ?>
+                <div class="row g-4">
+                    <?php foreach ($lista as $e):
+                        $yt = !empty($e['youtube_id']) ? 'https://www.youtube.com/watch?v=' . rawurlencode($e['youtube_id']) : null;
+                        $canalL = trim(mb_strtolower($e['channel_name'] ?? ''));
+                        $podL   = trim(mb_strtolower($e['podcast_title'] ?? ''));
                     ?>
-                        <div class="col-md-6 col-lg-3">
-                            <div class="card h-100 schedule-card <?= $isToday ? 'is-today' : ''; ?>">
-                                <div class="card-header bg-light border-0 fw-bold py-3 d-flex align-items-center justify-content-between">
-                                    <span><?= htmlspecialchars($day); ?></span>
-                                    <?php if ($isToday): ?>
-                                        <span class="badge bg-white text-primary fw-normal">Hoy</span>
-                                    <?php endif; ?>
-                                </div>
-                                <div class="card-body p-3">
-                                    <?php if (!empty($scheduleData[$day])):
-                                        $total = count($scheduleData[$day]);
-                                        foreach ($scheduleData[$day] as $index => $item):
-                                    ?>
-                                            <div class="d-flex align-items-center gap-3">
-                                                <?php if (!empty($item['image'])): ?>
-                                                    <img src="<?= htmlspecialchars($item['image']); ?>"
-                                                        class="img-thumb-preview" style="width: 50px; height: 50px;"
-                                                        onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                                                    <div class="img-thumb-preview align-items-center justify-content-center bg-light text-muted rounded"
-                                                        style="display: none;">
-                                                        <i class="fas fa-podcast"></i>
-                                                    </div>
-                                                <?php else: ?>
-                                                    <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted">
-                                                        <i class="fas fa-podcast"></i>
-                                                    </div>
-                                                <?php endif; ?>
+                        <div class="col-md-6 col-lg-4">
+                            <div class="episode-card">
+                                <?php if ($yt): ?>
+                                    <a href="<?= h($yt) ?>" target="_blank" rel="noopener" class="episode-thumb-container" title="Ver en YouTube">
+                                        <img src="https://i.ytimg.com/vi/<?= h($e['youtube_id']) ?>/hqdefault.jpg" class="episode-thumb" alt="Miniatura" loading="lazy">
+                                        <span class="episode-play"><i class="fas fa-play-circle"></i></span>
+                                    </a>
+                                <?php else: ?>
+                                    <div class="episode-thumb-container">
+                                        <div class="episode-thumb d-flex align-items-center justify-content-center text-white-50"><i class="fas fa-microphone fs-1"></i></div>
+                                    </div>
+                                <?php endif; ?>
 
-                                                <div>
-                                                    <h6 class="mb-0 fw-semibold text-truncate" style="max-width: 140px;"><?= htmlspecialchars($item['title']); ?></h6>
-                                                    <span class="badge bg-light text-secondary border mt-1">Cap. <?= $item['episodio']; ?></span>
-                                                    <div class="small text-muted mt-1">
-                                                        <i class="far fa-clock me-1"></i><?= date("H:i", strtotime($item['start_time'])); ?> hs
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <?php if ($index < $total - 1): ?>
-                                                <hr class="my-3 text-light-emphasis">
-                                            <?php endif; ?>
-                                        <?php endforeach;
-                                    else: ?>
-                                        <div class="text-center py-4 text-muted">
-                                            <i class="fas fa-calendar-minus fs-3 mb-2 d-block opacity-50"></i>
-                                            <span class="small">Sin podcasts</span>
-                                        </div>
-                                    <?php endif; ?>
+                                <div class="episode-body">
+                                    <div class="d-flex align-items-start justify-content-between gap-2 mb-2">
+                                        <h5 class="episode-title mb-0" title="<?= h($e['title']) ?>"><?= h($e['title']) ?></h5>
+                                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill text-nowrap">Cap. <?= h($e['number']) ?></span>
+                                    </div>
+
+                                    <div class="episode-meta">
+                                        <span><i class="far fa-calendar-alt me-1"></i><?= h(fecha_corta($e['publish_date'])) ?></span>
+                                        <span>•</span>
+                                        <?= badge_episodio($e) ?>
+                                    </div>
+
+                                    <div class="episode-podcast-info flex-wrap small text-muted">
+                                        <?php if ($canalL !== '' && $canalL !== $podL): ?>
+                                            <span class="fw-semibold"><i class="fas fa-tv me-1"></i><?= h($e['channel_name']) ?></span>
+                                            <span>•</span>
+                                        <?php endif; ?>
+                                        <span class="text-dark fw-medium"><i class="fas fa-podcast text-primary"></i> <?= h($e['podcast_title']) ?></span>
+                                        <span>•</span>
+                                        <span class="badge bg-light text-dark border">Temporada <?= h($e['season_number']) ?></span>
+                                    </div>
+
+                                    <div class="mt-auto pt-2 border-top d-flex justify-content-end gap-2">
+                                        <?php if ($yt): ?>
+                                            <a href="<?= h($yt) ?>" target="_blank" rel="noopener" class="btn btn-sm btn-light text-danger border" title="Ver en YouTube">
+                                                <i class="fab fa-youtube me-1"></i> Ver
+                                            </a>
+                                        <?php endif; ?>
+                                        <a href="edit.php?type=<?= h($episodios) ?>&id=<?= (int) $e['id'] ?>" class="btn btn-sm btn-light text-primary border" title="Editar">
+                                            <i class="fas fa-pen me-1"></i> Editar
+                                        </a>
+                                        <?= boton_borrar('episodios', (int) $e['id'], '¿Eliminar este episodio?') ?>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     <?php endforeach; ?>
                 </div>
+
+            <?php else: ?>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead>
+                            <tr>
+                                <th>Miniatura</th>
+                                <th>Título</th>
+                                <th>Podcast y Temporada</th>
+                                <th>Cap.</th>
+                                <th>Publicación</th>
+                                <th>Duración</th>
+                                <th class="text-end">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($lista as $e):
+                                $yt = !empty($e['youtube_id']) ? 'https://www.youtube.com/watch?v=' . rawurlencode($e['youtube_id']) : null;
+                                $canalL = trim(mb_strtolower($e['channel_name'] ?? ''));
+                                $podL   = trim(mb_strtolower($e['podcast_title'] ?? ''));
+                            ?>
+                                <tr>
+                                    <td style="width:80px;">
+                                        <?php if ($yt): ?>
+                                            <a href="<?= h($yt) ?>" target="_blank" rel="noopener">
+                                                <img src="https://i.ytimg.com/vi/<?= h($e['youtube_id']) ?>/mqdefault.jpg" class="img-thumb-preview" style="width:70px;height:42px;" loading="lazy" alt="">
+                                            </a>
+                                        <?php else: ?>
+                                            <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted" style="width:70px;height:42px;"><i class="fas fa-microphone"></i></div>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="fw-semibold text-dark">
+                                        <?php if ($yt): ?>
+                                            <a href="<?= h($yt) ?>" target="_blank" rel="noopener" class="text-dark text-decoration-none"><?= h($e['title']) ?></a>
+                                        <?php else: ?>
+                                            <?= h($e['title']) ?>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <div class="d-flex align-items-center gap-1 flex-wrap small">
+                                            <?php if ($canalL !== '' && $canalL !== $podL): ?>
+                                                <span class="text-muted fw-semibold"><i class="fas fa-tv me-1"></i><?= h($e['channel_name']) ?></span>
+                                                <span class="text-muted">•</span>
+                                            <?php endif; ?>
+                                            <span class="fw-medium text-dark"><i class="fas fa-podcast text-primary"></i> <?= h($e['podcast_title']) ?></span>
+                                            <span class="badge bg-light text-dark border">T<?= h($e['season_number']) ?></span>
+                                        </div>
+                                    </td>
+                                    <td><span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill">Cap. <?= h($e['number']) ?></span></td>
+                                    <td class="small text-muted"><?= h(fecha_corta($e['publish_date'])) ?></td>
+                                    <td class="small text-muted"><?= badge_episodio($e) ?></td>
+                                    <td class="text-end text-nowrap">
+                                        <a href="edit.php?type=<?= h($episodios) ?>&id=<?= (int) $e['id'] ?>" class="btn btn-sm btn-light text-primary me-1" title="Editar"><i class="fas fa-pen"></i></a>
+                                        <?= boton_borrar('episodios', (int) $e['id'], '¿Eliminar este episodio?', false, '') ?>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
             <?php endif; ?>
-        </div>
 
-        <!-- Footer -->
-        <div class="footer">
-            <p class="mb-0">Podcast Manager &copy; <?= $año; ?> — Sistema de Gestión</p>
-        </div>
-    </div>
+            <?php if ($paginas > 1): ?>
+                <nav class="mt-4" aria-label="Paginación">
+                    <ul class="pagination justify-content-center flex-wrap mb-0">
+                        <li class="page-item <?= $page <= 1 ? 'disabled' : '' ?>"><a class="page-link" href="<?= h(url_con(['page' => $page - 1])) ?>">&laquo;</a></li>
+                        <?php for ($i = max(1, $page - 2); $i <= min($paginas, $page + 2); $i++): ?>
+                            <li class="page-item <?= $i === $page ? 'active' : '' ?>"><a class="page-link" href="<?= h(url_con(['page' => $i])) ?>"><?= $i ?></a></li>
+                        <?php endfor; ?>
+                        <li class="page-item <?= $page >= $paginas ? 'disabled' : '' ?>"><a class="page-link" href="<?= h(url_con(['page' => $page + 1])) ?>">&raquo;</a></li>
+                    </ul>
+                    <div class="text-center text-muted small mt-2">Página <?= $page ?> de <?= $paginas ?></div>
+                </nav>
+            <?php endif; ?>
 
-    <!-- Bootstrap JS Bundle -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+        <?php else: ?>
+            <div class="empty-state">
+                <i class="fas fa-<?= $hayFiltros ? 'search' : 'microphone-alt' ?>"></i>
+                <h5><?= $hayFiltros ? 'No se encontraron coincidencias' : 'Sin Episodios' ?></h5>
+                <p class="small"><?= $hayFiltros ? 'Prueba con otros filtros.' : 'Comienza publicando episodios en tus podcasts existentes.' ?></p>
+            </div>
+        <?php endif; ?>
 
-    <!-- Script de Filtro y Alternador de Vistas -->
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const btnGrid = document.getElementById('btnViewGrid');
-            const btnList = document.getElementById('btnViewList');
-            const gridView = document.getElementById('episodesGridView');
-            const listView = document.getElementById('episodesListView');
-            const searchInput = document.getElementById('searchEpisode');
-            const noResults = document.getElementById('noResultsMsg');
+    <?php elseif ($section === $calendario): ?>
+        <?php
+        // Los horarios ya no se recalculan en cada visita: solo si nunca se calcularon o tienen +24 h.
+        if (horarios_desactualizados($conn, 24)) {
+            recalcular_horarios($conn);
+        }
+        $ultimoCalculo = consultar($conn, "SELECT setting_value FROM site_settings WHERE setting_key = 'schedule_updated_at'")[0]['setting_value'] ?? null;
 
-            if (btnGrid && btnList) {
-                // Alternar a vista Grid
-                btnGrid.addEventListener('click', function() {
-                    btnGrid.classList.add('active');
-                    btnList.classList.remove('active');
-                    gridView.classList.remove('d-none');
-                    listView.classList.add('d-none');
-                });
+        $dias_map = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
+        $dia_hoy = $dias_map[(int) date('w')];
+        $orden_dias = DIAS_SEMANA;
+        $index_hoy = array_search($dia_hoy, $orden_dias, true);
+        $dayname_en = ['Lunes' => 'Monday', 'Martes' => 'Tuesday', 'Miercoles' => 'Wednesday', 'Jueves' => 'Thursday', 'Viernes' => 'Friday', 'Sabado' => 'Saturday', 'Domingo' => 'Sunday'];
 
-                // Alternar a vista Lista
-                btnList.addEventListener('click', function() {
-                    btnList.classList.add('active');
-                    btnGrid.classList.remove('active');
-                    listView.classList.remove('d-none');
-                    gridView.classList.add('d-none');
-                });
+        $scheduleData = [];
+        foreach ($orden_dias as $index_dia => $day) {
+            if ($index_dia < $index_hoy) {
+                // Días pasados de la semana: episodios REALES publicados
+                $scheduleData[$day] = consultar(
+                    $conn,
+                    "SELECT p.id AS podcast_id, p.title, COALESCE(NULLIF(p.image, ''), c.image) AS image,
+                            e.number AS episodio, TIME(e.publish_date) AS start_time
+                     FROM episodes e
+                     JOIN seasons sn ON e.season_id = sn.id
+                     JOIN podcasts p ON sn.podcast_id = p.id
+                     LEFT JOIN channels c ON p.channel_id = c.id
+                     WHERE p.state != 'Finalizado'
+                       AND DAYNAME(e.publish_date) = ?
+                       AND e.publish_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                     ORDER BY e.publish_date ASC",
+                    's',
+                    [$dayname_en[$day]]
+                );
+            } else {
+                // Hoy y días futuros: horarios programados (fijos o calculados)
+                $scheduleData[$day] = consultar(
+                    $conn,
+                    "SELECT s.id AS schedule_id, s.start_time, p.id AS podcast_id, p.title,
+                            COALESCE(NULLIF(p.image, ''), c.image) AS image,
+                            COALESCE((SELECT MAX(e.number) FROM episodes e JOIN seasons sn ON sn.id = e.season_id WHERE sn.podcast_id = p.id), 0) + 1 AS episodio
+                     FROM schedule s
+                     JOIN podcasts p ON s.podcast_id = p.id
+                     LEFT JOIN channels c ON p.channel_id = c.id
+                     WHERE p.state != 'Finalizado' AND s.day_of_week = ?
+                     ORDER BY s.start_time",
+                    's',
+                    [$day]
+                );
             }
+        }
+        ?>
+        <?php if ($ultimoCalculo): ?>
+            <p class="text-muted small mb-3"><i class="far fa-clock me-1"></i>Horarios calculados: <?= h(fecha_corta($ultimoCalculo)) ?></p>
+        <?php endif; ?>
 
-            if (searchInput) {
-                // Búsqueda / Filtrado en vivo
-                searchInput.addEventListener('keyup', function() {
-                    const query = searchInput.value.toLowerCase().trim();
-                    const items = document.querySelectorAll('.episode-item');
-                    let visibleCount = 0;
+        <div class="row g-3">
+            <?php foreach ($orden_dias as $day): $esHoy = ($day === $dia_hoy); ?>
+                <div class="col-md-6 col-lg-3">
+                    <div class="card h-100 schedule-card <?= $esHoy ? 'is-today' : '' ?>">
+                        <div class="card-header bg-light border-0 fw-bold py-3 d-flex align-items-center justify-content-between">
+                            <span><?= h($day) ?></span>
+                            <?php if ($esHoy): ?><span class="badge bg-white text-primary fw-normal">Hoy</span><?php endif; ?>
+                        </div>
+                        <div class="card-body p-3">
+                            <?php if (!empty($scheduleData[$day])):
+                                $totalDia = count($scheduleData[$day]);
+                                foreach ($scheduleData[$day] as $i => $item): ?>
+                                    <div class="d-flex align-items-center gap-3">
+                                        <?php img_logo($item['image'] ?? '', 'fa-podcast'); ?>
+                                        <div>
+                                            <h6 class="mb-0 fw-semibold text-truncate" style="max-width:140px;"><?= h($item['title']) ?></h6>
+                                            <span class="badge bg-light text-secondary border mt-1">Cap. <?= h($item['episodio']) ?></span>
+                                            <div class="small text-muted mt-1"><i class="far fa-clock me-1"></i><?= h(date('H:i', strtotime($item['start_time']))) ?> hs</div>
+                                        </div>
+                                    </div>
+                                    <?php if ($i < $totalDia - 1): ?><hr class="my-3 text-light-emphasis"><?php endif; ?>
+                                <?php endforeach;
+                            else: ?>
+                                <div class="text-center py-4 text-muted">
+                                    <i class="fas fa-calendar-minus fs-3 mb-2 d-block opacity-50"></i>
+                                    <span class="small">Sin podcasts</span>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+    <?php endif; ?>
+</div>
 
-                    items.forEach(function(item) {
-                        const searchContent = item.getAttribute('data-search') || '';
-                        if (searchContent.includes(query)) {
-                            item.classList.remove('d-none');
-                            visibleCount++;
-                        } else {
-                            item.classList.add('d-none');
-                        }
-                    });
-
-                    // Mostrar mensaje de sin resultados si corresponde
-                    if (noResults) {
-                        if (visibleCount === 0) {
-                            noResults.classList.remove('d-none');
-                        } else {
-                            noResults.classList.add('d-none');
-                        }
-                    }
-                });
-            }
-        });
-    </script>
-</body>
-
-</html>
+<?php include 'layout_footer.php'; ?>

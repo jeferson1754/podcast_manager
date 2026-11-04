@@ -1,0 +1,79 @@
+:root {
+    --bg-body: #f4f6f9;
+    --card-radius: 12px;
+    --primary-color: #4f46e5;
+    --primary-hover: #4338ca;
+}
+
+body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-body);
+    color: #1e293b;
+    min-height: 100vh;
+}
+
+/* Navbar */
+.navbar { background: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 0.8rem 0; }
+.navbar-brand { font-weight: 700; color: #0f172a; font-size: 1.25rem; }
+.nav-pills .nav-link { color: #64748b; font-weight: 500; border-radius: 8px; padding: 0.5rem 1rem; transition: all 0.2s ease; }
+.nav-pills .nav-link:hover { color: var(--primary-color); background-color: #f1f5f9; }
+.nav-pills .nav-link.active { background-color: var(--primary-color); color: #ffffff !important; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2); }
+
+/* Contenedor principal */
+.main-card {
+    background: #ffffff;
+    border-radius: var(--card-radius);
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03);
+    padding: 1.5rem;
+    margin-top: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.page-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #f1f5f9;
+}
+
+.btn-primary { background-color: var(--primary-color); border-color: var(--primary-color); border-radius: 8px; font-weight: 500; padding: 0.5rem 1rem; }
+.btn-primary:hover { background-color: var(--primary-hover); border-color: var(--primary-hover); }
+
+/* Tablas */
+.table { vertical-align: middle; }
+.table th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; font-weight: 600; border-bottom-width: 1px; background-color: #f8fafc; }
+.img-thumb-preview { width: 50px; height: 50px; object-fit: cover; border-radius: 8px; border: 1px solid #e2e8f0; }
+
+/* Tarjetas de resumen */
+.stat-card { border: 1px solid #e2e8f0; border-radius: var(--card-radius); padding: 1rem 1.25rem; background: #fff; height: 100%; }
+.stat-card .stat-value { font-size: 1.6rem; font-weight: 700; color: #0f172a; line-height: 1.1; }
+.stat-card .stat-label { font-size: 0.8rem; color: #64748b; }
+
+/* Tarjetas de episodios */
+.episode-card { border: 1px solid #e2e8f0; border-radius: var(--card-radius); overflow: hidden; background: #fff; transition: all 0.2s ease-in-out; height: 100%; display: flex; flex-direction: column; }
+.episode-card:hover { transform: translateY(-3px); box-shadow: 0 10px 20px -5px rgba(0, 0, 0, 0.08); border-color: #cbd5e1; }
+.episode-thumb-container { position: relative; width: 100%; padding-top: 56.25%; background-color: #0f172a; display: block; }
+.episode-thumb { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+.episode-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0); color: rgba(255, 255, 255, 0); font-size: 2.5rem; transition: all .2s; }
+.episode-thumb-container:hover .episode-play { background: rgba(15, 23, 42, .35); color: #fff; }
+.episode-body { padding: 1.25rem; display: flex; flex-direction: column; flex-grow: 1; }
+.episode-title { font-size: 1.1rem; font-weight: 600; color: #0f172a; line-height: 1.4; margin-bottom: 0.5rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.episode-meta { font-size: 0.85rem; color: #64748b; display: flex; align-items: center; gap: 12px; margin-bottom: 0.75rem; }
+.episode-podcast-info { background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 8px; padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 500; color: #334155; display: flex; align-items: center; gap: 6px; margin-bottom: 1rem; }
+
+/* Badges de estado */
+.badge-state { display: inline-flex; align-items: center; gap: 6px; padding: 0.35em 0.75em; font-size: 0.8rem; font-weight: 600; border-radius: 20px; cursor: pointer; text-decoration: none; transition: opacity 0.2s; }
+.state-active { background-color: #dcfce7; color: #166534; }
+.state-inactive { background-color: #fef3c7; color: #92400e; }
+.state-finished { background-color: #f1f5f9; color: #475569; }
+
+/* Calendario */
+.schedule-card { border-radius: var(--card-radius); border: 1px solid #e2e8f0; transition: transform 0.2s, box-shadow 0.2s; }
+.schedule-card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); }
+.schedule-card.is-today { border: 2px solid var(--primary-color); }
+
+/* Estado vacío */
+.empty-state { text-align: center; padding: 4rem 1rem; color: #94a3b8; }
+.empty-state i { font-size: 3.5rem; margin-bottom: 1rem; color: #cbd5e1; }
+
+.footer { text-align: center; padding: 1.5rem; font-size: 0.875rem; color: #94a3b8; }
+.badge.bg-warning i.fa-circle { color: #fd7e14 !important; }

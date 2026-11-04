@@ -3,10 +3,9 @@
 // Compatible con PHP 7.4+
 
 include 'bd.php';   // Debe definir: $conn, $podcast, $temporadas, $episodios
+require_once 'sesion.php';
+require_once 'helpers.php';   // h(), consultar(), ejecutar(), validaciones y constantes
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
 
 if ($conn->connect_error) {
     http_response_code(500);
@@ -16,6 +15,11 @@ if ($conn->connect_error) {
 // Si se solicita crear una temporada mediante AJAX desde la edición
 if (isset($_POST['action']) && $_POST['action'] === 'crear_temporada_ajax') {
     header('Content-Type: application/json');
+    if (!csrf_validar()) {
+        http_response_code(419);
+        echo json_encode(['success' => false, 'message' => 'Sesión expirada. Recarga la página.']);
+        exit;
+    }
     $podcast_id = (int) $_POST['podcast_id'];
 
     // 1. 🛡️ VALIDACIÓN CRÍTICA: Comprobar que el podcast realmente existe en la BD
@@ -60,131 +64,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'crear_temporada_ajax') {
 }
 
 // ------------------------------------------------------------------
-// CONSTANTES DE VALIDACIÓN
-// ------------------------------------------------------------------
-const ESTADOS_PODCAST = ['Activo', 'Inactivo', 'Finalizado'];
-const DURACION_MAX_SEG = 36000;   // 10:00:00
-const NUMERO_MAX = 9999;
-const TITULO_MAX = 255;
-
-// ------------------------------------------------------------------
-// FUNCIONES AUXILIARES
-// ------------------------------------------------------------------
-
-/** Escapa un valor para imprimirlo en HTML. */
-function h($valor): string
-{
-    return htmlspecialchars((string) $valor, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-}
-
-/** Lee un campo POST como texto sin espacios sobrantes ('' si no existe o es un array). */
-function post_texto(string $campo): string
-{
-    $v = $_POST[$campo] ?? '';
-    return is_string($v) ? trim($v) : '';
-}
-
-/** Lee un campo POST como entero dentro de un rango. Devuelve null si no es válido. */
-function post_entero(string $campo, int $min, int $max): ?int
-{
-    $v = filter_var(post_texto($campo), FILTER_VALIDATE_INT, [
-        'options' => ['min_range' => $min, 'max_range' => $max],
-    ]);
-    return $v === false ? null : $v;
-}
-
-function url_valida(string $url): bool
-{
-    return filter_var($url, FILTER_VALIDATE_URL) !== false
-        && preg_match('#^https?://#i', $url) === 1;
-}
-
-/** Acepta H:MM:SS o HH:MM:SS y devuelve HH:MM:SS, o null si es inválida o supera el máximo. */
-function normalizar_duracion(string $v): ?string
-{
-    if (!preg_match('/^(\d{1,2}):([0-5]\d):([0-5]\d)$/', $v, $m)) {
-        return null;
-    }
-    $total = ((int) $m[1]) * 3600 + ((int) $m[2]) * 60 + (int) $m[3];
-    if ($total > DURACION_MAX_SEG) {
-        return null;
-    }
-    return sprintf('%02d:%02d:%02d', $m[1], $m[2], $m[3]);
-}
-
-/** Convierte el valor de <input type="datetime-local"> a 'Y-m-d H:i:s'. Null si es inválido. */
-function normalizar_fecha(string $v): ?string
-{
-    foreach (['Y-m-d\TH:i:s', 'Y-m-d\TH:i'] as $formato) {
-        $dt = DateTime::createFromFormat($formato, $v);
-        $e = DateTime::getLastErrors();
-        if ($dt !== false && (!$e || ($e['warning_count'] === 0 && $e['error_count'] === 0))) {
-            return $dt->format('Y-m-d H:i:s');
-        }
-    }
-    return null;
-}
-
-/** Convierte 'Y-m-d H:i:s' (BD) al formato que espera datetime-local. */
-function fecha_para_input(?string $v): string
-{
-    if (!$v) {
-        return '';
-    }
-    $dt = DateTime::createFromFormat('Y-m-d H:i:s', $v);
-    return $dt ? $dt->format('Y-m-d\TH:i:s') : '';
-}
-
-/** SELECT con sentencia preparada. Devuelve un arreglo de filas. */
-function consultar(mysqli $conn, string $sql, string $tipos = '', array $params = []): array
-{
-    $stmt = $conn->prepare($sql);
-    if (!$stmt) {
-        error_log('SQL prepare error: ' . $conn->error);
-        return [];
-    }
-    if ($tipos !== '') {
-        $stmt->bind_param($tipos, ...$params);
-    }
-    $stmt->execute();
-    $res = $stmt->get_result();
-    $filas = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
-    $stmt->close();
-    return $filas;
-}
-
-/** UPDATE/INSERT con sentencia preparada. Devuelve true si se ejecutó bien. */
-function ejecutar(mysqli $conn, string $sql, string $tipos, array $params): bool
-{
-    $stmt = $conn->prepare($sql);
-    if (!$stmt) {
-        error_log('SQL prepare error: ' . $conn->error);
-        return false;
-    }
-    $stmt->bind_param($tipos, ...$params);
-    $ok = $stmt->execute();
-    if (!$ok) {
-        error_log('SQL execute error: ' . $stmt->error);
-    }
-    $stmt->close();
-    return $ok;
-}
-
-/** Imprime un campo de formulario con su mensaje de error (si lo hay). */
-function campo(string $label, string $name, string $tipo, array $form, array $errores, string $extra = ''): void
-{
-    $invalido = isset($errores[$name]);
-?>
-    <div class="mb-3">
-        <label class="form-label" for="<?= h($name) ?>"><?= h($label) ?></label>
-        <input type="<?= h($tipo) ?>" class="form-control<?= $invalido ? ' is-invalid' : '' ?>"
-            id="<?= h($name) ?>" name="<?= h($name) ?>" value="<?= h($form[$name] ?? '') ?>" required <?= $extra ?>>
-        <div class="invalid-feedback"><?= h($errores[$name] ?? '') ?></div>
-    </div>
-<?php
-}
-
-// ------------------------------------------------------------------
 // 1. VALIDAR PARÁMETROS DE LA URL
 // ------------------------------------------------------------------
 $tablas = [
@@ -223,7 +102,7 @@ $nombrePodcast = '';
 if ($type === $episodios) {
     $listaTemporadas = consultar(
         $conn,
-        "SELECT seasons.id, podcasts.title, seasons.number
+        "SELECT seasons.id, seasons.podcast_id, podcasts.title, seasons.number
          FROM seasons INNER JOIN podcasts ON podcasts.id = seasons.podcast_id
          ORDER BY podcasts.title, seasons.number"
     );
@@ -234,6 +113,9 @@ if ($type === $episodios) {
 
 // Valores iniciales del formulario
 $form = $registro;
+if (($form['state'] ?? '') === 'Pausado') {
+    $form['state'] = 'Inactivo';   // 'Pausado' es solo la etiqueta; en BD se guarda 'Inactivo'
+}
 $form['link'] = $registro['description'] ?? '';
 $form['publish_date'] = fecha_para_input($registro['publish_date'] ?? null);
 
@@ -250,7 +132,7 @@ $errorGeneral = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Si hay errores, el formulario se vuelve a mostrar con lo que escribió el usuario
-    foreach (['title', 'image', 'link', 'state', 'number', 'season_id', 'duration', 'publish_date'] as $c) {
+    foreach (['title', 'image', 'link', 'state', 'schedule_custom', 'number', 'season_id', 'duration', 'publish_date'] as $c) {
         if (isset($_POST[$c]) && is_string($_POST[$c])) {
             $form[$c] = trim($_POST[$c]);
         }
@@ -273,14 +155,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($v['title'] === '' || mb_strlen($v['title']) > TITULO_MAX) {
                 $errores['title'] = 'El título es obligatorio (máx. ' . TITULO_MAX . ' caracteres).';
             }
-            if (!url_valida($v['image'])) {
-                $errores['image'] = 'Ingresa un link válido que empiece con http:// o https://';
+            if (!imagen_valida($v['image'])) {
+                $errores['image'] = 'Ingresa un link http(s) válido o déjalo vacío para usar la imagen del canal.';
             }
             if (!url_valida($v['link'])) {
                 $errores['link'] = 'Ingresa un link válido que empiece con http:// o https://';
             }
             if (!in_array($v['state'], ESTADOS_PODCAST, true)) {
                 $errores['state'] = 'Estado no válido.';
+            }
+            $horario = normalizar_schedule_custom($v['schedule_custom']);
+            if ($horario === null) {
+                $errores['schedule_custom'] = 'Formato inválido. Usa Día:HH:MM separados por coma. Ej: Martes:12:00,Jueves:18:30';
+            } else {
+                $v['schedule_custom'] = $horario;
             }
             if (!$errores) {
                 $ok = ejecutar(
@@ -316,8 +204,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $duration = normalizar_duracion(post_texto('duration'));
             $fecha    = normalizar_fecha(post_texto('publish_date'));
 
-            $idsValidos = array_map('strval', array_column($listaTemporadas, 'id'));
-            if ($seasonId === null || !in_array((string) $seasonId, $idsValidos, true)) {
+            $podcastDeTemporada = null;
+            foreach ($listaTemporadas as $t) {
+                if ($seasonId !== null && (int) $t['id'] === $seasonId) {
+                    $podcastDeTemporada = (int) $t['podcast_id'];
+                }
+            }
+            if ($podcastDeTemporada === null) {
                 $errores['season_id'] = 'Selecciona una temporada válida.';
             }
             if ($number === null) {
@@ -335,9 +228,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$errores) {
                 $ok = ejecutar(
                     $conn,
-                    "UPDATE episodes SET season_id = ?, number = ?, title = ?, duration = ?, publish_date = ? WHERE id = ?",
-                    'iisssi',
-                    [$seasonId, $number, $title, $duration, $fecha, $id]
+                    "UPDATE episodes SET season_id = ?, podcast_id = ?, number = ?, title = ?, duration = ?, publish_date = ? WHERE id = ?",
+                    'iiisssi',
+                    [$seasonId, $podcastDeTemporada, $number, $title, $duration, $fecha, $id]
                 );
             }
         }
@@ -362,12 +255,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Editar <?= h(ucfirst($type)) ?></title>
+    <meta name="robots" content="noindex">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 
 <body>
     <div class="container mt-5">
         <h2>Editar <?= h(ucfirst($type)) ?></h2>
+        <p><a href="index.php?section=<?= h(urlencode($type)) ?>" class="text-decoration-none"><i class="fas fa-arrow-left me-1"></i>Volver</a></p>
 
         <?php if (!empty($mensajeExito)): ?>
             <div class="alert alert-success alert-dismissible fade show" role="alert">
@@ -388,14 +284,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <?php if ($type === $podcast): ?>
 
                 <?php campo('Titulo', 'title', 'text', $form, $errores, 'maxlength="' . TITULO_MAX . '"'); ?>
-                <?php campo('Imagen (Link)', 'image', 'url', $form, $errores); ?>
+                <div class="mb-3">
+                    <label class="form-label" for="image">Imagen (Link) <span class="text-muted small">— opcional, si queda vacía usa la del canal</span></label>
+                    <input type="text" class="form-control<?= isset($errores['image']) ? ' is-invalid' : '' ?>" id="image" name="image" value="<?= h($form['image'] ?? '') ?>">
+                    <div class="invalid-feedback"><?= h($errores['image'] ?? '') ?></div>
+                </div>
                 <?php campo('Link de Youtube', 'link', 'url', $form, $errores); ?>
 
                 <div class="mb-3">
                     <label class="form-label" for="state">Estado</label>
                     <select class="form-select<?= isset($errores['state']) ? ' is-invalid' : '' ?>" id="state" name="state" required>
                         <?php foreach (ESTADOS_PODCAST as $estado): ?>
-                            <option value="<?= h($estado) ?>" <?= ($form['state'] ?? '') === $estado ? 'selected' : '' ?>><?= h($estado) ?></option>
+                            <option value="<?= h($estado) ?>" <?= ($form['state'] ?? '') === $estado ? 'selected' : '' ?>><?= h(estado_label($estado)) ?></option>
                         <?php endforeach; ?>
                     </select>
                     <div class="invalid-feedback"><?= h($errores['state'] ?? '') ?></div>
@@ -403,9 +303,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <div class="mb-3">
                     <label for="schedule_custom" class="form-label">Horario Fijo Personalizado (Opcional)</label>
-                    <input type="text" class="form-control" id="schedule_custom" name="schedule_custom"
-                        value="<?= htmlspecialchars($podcast['schedule_custom'] ?? ''); ?>"
-                        placeholder="Ej: Martes:12:00,Jueves:12:00">
+                    <input type="text" class="form-control<?= isset($errores['schedule_custom']) ? ' is-invalid' : '' ?>" id="schedule_custom" name="schedule_custom"
+                        value="<?= h($form['schedule_custom'] ?? '') ?>"
+                        placeholder="Ej: Martes:12:00,Jueves:12:30">
+                    <div class="invalid-feedback"><?= h($errores['schedule_custom'] ?? '') ?></div>
                     <div class="form-text">Si lo dejas vacío, el sistema calculará el horario automáticamente basándose en los episodios. Si escribes días y horas, se respetarán tal cual.</div>
                 </div>
 
@@ -508,10 +409,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (btnCrearTemporada) {
             btnCrearTemporada.addEventListener('click', function() {
 
-                const podcastId = <?= (int) $registro['podcast_id'] ?>;
+                // Podcast de la temporada seleccionada (no depende de episodes.podcast_id, que puede estar vacío)
+                const podcastPorTemporada = <?= json_encode(array_column($listaTemporadas, 'podcast_id', 'id'), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+                const podcastId = podcastPorTemporada[document.getElementById('season_id').value] || <?= (int) ($registro['podcast_id'] ?? 0) ?>;
 
                 const formData = new FormData();
                 formData.append('action', 'crear_temporada_ajax');
+                formData.append('csrf_token', <?= json_encode(csrf_token()) ?>);
                 formData.append('podcast_id', podcastId);
 
                 // Evitar múltiples clics mientras se procesa
@@ -519,7 +423,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 fetch('edit.php?type=episodios&id=<?= (int) $id ?>', {
                         method: 'POST',
-                        body: formData
+                        body: formData,
+                        credentials: 'same-origin'
                     })
                     .then(response => {
                         if (!response.ok) {

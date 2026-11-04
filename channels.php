@@ -1,10 +1,13 @@
 <?php
 include('bd.php');
+require_once 'sesion.php';
+
 
 // ------------------------------------------------------------------
 // ACCIONES POST
 // ------------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_exigir();
     if ($conn->connect_error) {
         die('Connection Error');
     }
@@ -233,6 +236,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                     <div class="card-body">
                         <form action="channels.php" method="post">
                             <input type="hidden" name="accion" value="crear_canal">
+                            <?= csrf_field() ?>
                             <div class="mb-3">
                                 <label class="form-label">Nombre del Canal</label>
                                 <input type="text" class="form-control" name="name" placeholder="Ej: Canal Principal" required>
@@ -298,6 +302,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                         ?>
                         <form action="channels.php" method="post" id="form-asignar">
                             <input type="hidden" name="accion" value="asignar_podcast">
+                            <?= csrf_field() ?>
 
                             <div class="mb-3">
                                 <label class="form-label fw-semibold">1. Podcast</label>
@@ -425,6 +430,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                                                                 <form action="channels.php" method="post" class="d-inline"
                                                                     onsubmit="return confirm('¿Quitar «<?= htmlspecialchars(addslashes($pod['title']), ENT_QUOTES); ?>» de este canal?\nEl podcast y sus episodios no se borran.');">
                                                                     <input type="hidden" name="accion" value="desvincular_podcast">
+                            <?= csrf_field() ?>
                                                                     <input type="hidden" name="podcast_id" value="<?= (int) $pod['id']; ?>">
                                                                     <span class="badge bg-light text-dark border px-2 py-1 d-inline-flex align-items-center gap-1">
                                                                         <i class="fas fa-podcast text-muted"></i> <?= htmlspecialchars($pod['title']); ?>
@@ -459,6 +465,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
                                                     <form action="channels.php" method="post" class="d-inline"
                                                         onsubmit="return confirm('¿Eliminar el canal «<?= htmlspecialchars(addslashes($data['name']), ENT_QUOTES); ?>»?<?= $nPodcasts > 0 ? '\n\nSus ' . $nPodcasts . ' podcast(s) NO se borrarán, pero quedarán sin canal asignado.' : ''; ?>');">
                                                         <input type="hidden" name="accion" value="eliminar_canal">
+                            <?= csrf_field() ?>
                                                         <input type="hidden" name="id" value="<?= (int) $ch_id; ?>">
                                                         <button type="submit" class="btn btn-sm btn-outline-danger" title="Eliminar canal">
                                                             <i class="fas fa-trash"></i>
@@ -490,6 +497,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
         <div class="modal-dialog">
             <form class="modal-content" action="channels.php" method="post">
                 <input type="hidden" name="accion" value="editar_canal">
+                            <?= csrf_field() ?>
                 <input type="hidden" name="id" id="edit-id">
                 <div class="modal-header">
                     <h5 class="modal-title"><i class="fas fa-pen me-1"></i> Editar canal</h5>
@@ -535,6 +543,7 @@ $flash = $mensajes[$_GET['msg'] ?? ''] ?? null;
             <form class="modal-content" action="channels.php" method="post"
                 onsubmit="return confirm('¿Confirmas la fusión? El canal origen se eliminará y esta acción no se puede deshacer.');">
                 <input type="hidden" name="accion" value="fusionar_canales">
+                            <?= csrf_field() ?>
                 <input type="hidden" name="origen_id" id="fus-origen">
                 <div class="modal-header">
                     <h5 class="modal-title"><i class="fas fa-code-merge me-1"></i> Fusionar canales</h5>
