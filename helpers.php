@@ -217,16 +217,17 @@ function normalizar_texto_busqueda(string $s): string
 /**
  * De los podcasts de un canal, elige el que se nombra en el título del episodio.
  * Ej.: "... | Quantum AM #3" -> el podcast "Quantum AM".
- * Gana el título más largo (así "Quantum AM" le gana a "Quantum"); si empatan, el que aparece primero.
- * Cada fila de $podcasts necesita al menos: 'title'. Devuelve la fila elegida o null si ninguno se nombra.
+ * Misma regla que detectar_podcast() del script de Python: si el título menciona a varios,
+ * gana el que termina más al final (la etiqueta suele ir al final); a igual posición, el nombre más largo
+ * (así "Quantum AM" le gana a "Quantum"). Cada fila de $podcasts necesita al menos: 'title'.
+ * Devuelve la fila elegida o null si ninguno se nombra.
  */
 function elegir_podcast_por_titulo(array $podcasts, string $tituloEpisodio): ?array
 {
     $texto = normalizar_texto_busqueda($tituloEpisodio);
     $textoCompacto = str_replace(' ', '', $texto);
     $mejor = null;
-    $mejorLargo = 0;
-    $mejorPos = PHP_INT_MAX;
+    $mejorClave = [-1, -1];
 
     foreach ($podcasts as $p) {
         $nombre = normalizar_texto_busqueda((string) ($p['title'] ?? ''));
@@ -234,19 +235,24 @@ function elegir_podcast_por_titulo(array $podcasts, string $tituloEpisodio): ?ar
         if ($largo < 2) {
             continue;
         }
-        // 1) palabra(s) completas: " quantum am " dentro del título
-        $pos = mb_strpos($texto, $nombre);
+        // 1) palabra(s) completas: " quantum am " (última aparición)
+        $pos = mb_strrpos($texto, $nombre);
+        $fin = $pos === false ? false : $pos + mb_strlen($nombre);
         // 2) respaldo sin espacios ("QuantumAM"), solo para nombres de 6+ letras
-        if ($pos === false && mb_strlen(str_replace(' ', '', $nombre)) >= 6) {
-            $pos = mb_strpos($textoCompacto, str_replace(' ', '', $nombre));
-        }
         if ($pos === false) {
+            $compacto = str_replace(' ', '', $nombre);
+            if (mb_strlen($compacto) >= 6) {
+                $pos = mb_strrpos($textoCompacto, $compacto);
+                $fin = $pos === false ? false : $pos + mb_strlen($compacto);
+            }
+        }
+        if ($fin === false) {
             continue;
         }
-        if ($largo > $mejorLargo || ($largo === $mejorLargo && $pos < $mejorPos)) {
+        $clave = [$fin, $largo];
+        if ($clave > $mejorClave) {
             $mejor = $p;
-            $mejorLargo = $largo;
-            $mejorPos = $pos;
+            $mejorClave = $clave;
         }
     }
     return $mejor;
@@ -264,4 +270,32 @@ function numero_en_titulo(string $tituloEpisodio, string $tituloPodcast): ?int
         return ($n >= 0 && $n <= NUMERO_MAX) ? $n : null;
     }
     return null;
+}
+
+/**
+ * Mueve un episodio al podcast destino: última temporada del destino (se crea la 1 si no hay),
+ * número del título ("Nombre #N") si está libre o el siguiente de la temporada.
+ * No abre transacción: quien la llame decide.
+ */
+function mover_episodio_a_podcast(mysqli $conn, int $episodioId, int $destinoPodcastId, string $tituloEpisodio, string $tituloDestino): bool
+{
+    $temp = consultar($conn, "SELECT id FROM seasons WHERE podcast_id = ? ORDER BY number DESC, id DESC LIMIT 1", 'i', [$destinoPodcastId]);
+    if ($temp) {
+        $seasonId = (int) $temp[0]['id'];
+    } else {
+        if (!ejecutar($conn, "INSERT INTO seasons (podcast_id, number, title) VALUES (?, 1, 'Temporada 1')", 'i', [$destinoPodcastId])) {
+            return false;
+        }
+        $seasonId = (int) $conn->insert_id;
+    }
+
+    $numero = numero_en_titulo($tituloEpisodio, $tituloDestino);
+    if ($numero !== null && consultar($conn, "SELECT 1 FROM episodes WHERE season_id = ? AND number = ? AND id <> ? LIMIT 1", 'iii', [$seasonId, $numero, $episodioId])) {
+        $numero = null;   // ya está ocupado en esa temporada
+    }
+    if ($numero === null) {
+        $numero = 1 + (int) (consultar($conn, "SELECT COALESCE(MAX(number), 0) AS m FROM episodes WHERE season_id = ?", 'i', [$seasonId])[0]['m'] ?? 0);
+    }
+
+    return ejecutar($conn, "UPDATE episodes SET season_id = ?, podcast_id = ?, number = ? WHERE id = ?", 'iiii', [$seasonId, $destinoPodcastId, $numero, $episodioId]);
 }

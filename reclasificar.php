@@ -53,27 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!in_array((int) $c['id'], $marcados, true)) {
                     continue;
                 }
-                $destino = $c['destino_id'];
-
-                // Última temporada del podcast destino (o se crea la 1)
-                $temp = consultar($conn, "SELECT id FROM seasons WHERE podcast_id = ? ORDER BY number DESC, id DESC LIMIT 1", 'i', [$destino]);
-                if ($temp) {
-                    $seasonId = (int) $temp[0]['id'];
-                } else {
-                    ejecutar($conn, "INSERT INTO seasons (podcast_id, number, title) VALUES (?, 1, 'Temporada 1')", 'i', [$destino]);
-                    $seasonId = (int) $conn->insert_id;
-                }
-
-                // Número: el "#N" del título si está libre; si no, el siguiente de la temporada
-                $numero = numero_en_titulo((string) $c['title'], (string) $c['destino_titulo']);
-                if ($numero !== null && consultar($conn, "SELECT 1 FROM episodes WHERE season_id = ? AND number = ? LIMIT 1", 'ii', [$seasonId, $numero])) {
-                    $numero = null;
-                }
-                if ($numero === null) {
-                    $numero = 1 + (int) (consultar($conn, "SELECT COALESCE(MAX(number), 0) AS m FROM episodes WHERE season_id = ?", 'i', [$seasonId])[0]['m'] ?? 0);
-                }
-
-                if (ejecutar($conn, "UPDATE episodes SET season_id = ?, podcast_id = ?, number = ? WHERE id = ?", 'iiii', [$seasonId, $destino, $numero, (int) $c['id']])) {
+                if (mover_episodio_a_podcast($conn, (int) $c['id'], (int) $c['destino_id'], (string) $c['title'], (string) $c['destino_titulo'])) {
                     $movidos++;
                 } else {
                     $errores++;

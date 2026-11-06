@@ -91,7 +91,18 @@ try {
     // Obtener todos los episodios (incluye publish_date, status, duration)
     // ------------------------------------------------------------------
     if ($action === 'obtener_todos_episodios') {
-        $episodios = $pdo->query("SELECT * FROM episodes")->fetchAll();
+        // Cada episodio con su podcast ACTUAL (el de su temporada), canal y youtube_channel_id
+        $episodios = $pdo->query("
+            SELECT e.*,
+                   p.id   AS podcast_id_actual,
+                   p.title AS podcast_title,
+                   c.name AS channel_name,
+                   c.youtube_channel_id AS channel_youtube_id
+            FROM episodes e
+            LEFT JOIN seasons  s ON s.id = e.season_id
+            LEFT JOIN podcasts p ON p.id = COALESCE(s.podcast_id, e.podcast_id)
+            LEFT JOIN channels c ON c.id = p.channel_id
+        ")->fetchAll();
         responder(['status' => 'success', 'episodios' => $episodios]);
     }
 
@@ -199,7 +210,22 @@ try {
         }
         if ($podcastsCanal) {
             $canalDbId = $podcastsCanal[0]['canal_id'];
-            $elegido   = count($podcastsCanal) > 1 ? elegir_podcast_por_titulo($podcastsCanal, $titulo) : null;
+            $elegido   = null;
+
+            // 1) Python ya decidió el podcast (lee la BD y entiende alias): se respeta si existe en este canal
+            $podcastNombre = mb_strtolower(trim((string) param('podcast_name', '')), 'UTF-8');
+            if ($podcastNombre !== '') {
+                foreach ($podcastsCanal as $pc) {
+                    if (mb_strtolower(trim($pc['title']), 'UTF-8') === $podcastNombre) {
+                        $elegido = $pc;
+                        break;
+                    }
+                }
+            }
+            // 2) Respaldo: elegir por el título del episodio (si el canal tiene varios podcasts)
+            if (!$elegido && count($podcastsCanal) > 1) {
+                $elegido = elegir_podcast_por_titulo($podcastsCanal, $titulo);
+            }
             $podcastId = ($elegido ?? $podcastsCanal[0])['podcast_id'];
         }
 
@@ -361,6 +387,77 @@ try {
     // ------------------------------------------------------------------
     // Registrar fin de sincronización
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Lista de podcasts con su canal (para detectar canales con varios podcasts y revisar carátulas)
+    // ------------------------------------------------------------------
+    if ($action === 'obtener_todos_podcasts') {
+        $podcasts = $pdo->query("
+            SELECT p.id, p.title, p.state, p.image, p.description AS link,
+                   p.channel_id AS channel_db_id,
+                   c.youtube_channel_id, c.name AS channel_name
+            FROM podcasts p
+            LEFT JOIN channels c ON c.id = p.channel_id
+            ORDER BY p.id
+        ")->fetchAll();
+        responder(['status' => 'ok', 'podcasts' => $podcasts]);
+    }
+
+    // ------------------------------------------------------------------
+    // Mover un episodio a otro podcast DEL MISMO CANAL, por nombre del podcast
+    // ------------------------------------------------------------------
+    if ($action === 'actualizar_podcast') {
+        $ytId   = trim((string) param('youtube_id'));
+        $nombre = trim((string) param('podcast_name'));
+        if ($ytId === '' || $nombre === '') {
+            responder(['status' => 'error', 'message' => 'Faltan youtube_id o podcast_name']);
+        }
+
+        $ep = consultar($conn, "
+            SELECT e.id, e.title, COALESCE(s.podcast_id, e.podcast_id) AS podcast_id, p.channel_id
+            FROM episodes e
+            LEFT JOIN seasons  s ON s.id = e.season_id
+            LEFT JOIN podcasts p ON p.id = COALESCE(s.podcast_id, e.podcast_id)
+            WHERE e.youtube_id = ? LIMIT 1", 's', [$ytId]);
+        if (!$ep) {
+            responder(['status' => 'error', 'message' => 'Episodio no encontrado']);
+        }
+        $ep = $ep[0];
+        if (empty($ep['channel_id'])) {
+            responder(['status' => 'error', 'message' => 'El podcast actual no tiene canal asignado']);
+        }
+
+        // El destino debe pertenecer al mismo canal (evita mover episodios entre canales distintos)
+        $dest = consultar($conn, "SELECT id, title FROM podcasts WHERE channel_id = ? AND TRIM(title) = ? LIMIT 1", 'is', [(int) $ep['channel_id'], $nombre]);
+        if (!$dest) {
+            responder(['status' => 'error', 'message' => 'El podcast destino no existe en el mismo canal']);
+        }
+        $dest = $dest[0];
+        if ((int) $dest['id'] === (int) $ep['podcast_id']) {
+            responder(['status' => 'success', 'message' => 'Sin cambios: ya está en ese podcast']);
+        }
+
+        $conn->begin_transaction();
+        $ok = mover_episodio_a_podcast($conn, (int) $ep['id'], (int) $dest['id'], (string) $ep['title'], (string) $dest['title']);
+        $ok ? $conn->commit() : $conn->rollback();
+
+        responder($ok
+            ? ['status' => 'success', 'message' => 'Episodio movido a ' . $dest['title']]
+            : ['status' => 'error', 'message' => 'No se pudo mover el episodio']);
+    }
+
+    // ------------------------------------------------------------------
+    // Actualizar la carátula de un podcast
+    // ------------------------------------------------------------------
+    if ($action === 'actualizar_imagen_podcast') {
+        $podcastId = filter_var(param('podcast_id'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $imagen    = trim((string) param('image'));
+        if ($podcastId === false || !url_valida($imagen)) {
+            responder(['status' => 'error', 'message' => 'podcast_id o image inválidos']);
+        }
+        $pdo->prepare("UPDATE podcasts SET image = ? WHERE id = ?")->execute([$imagen, $podcastId]);
+        responder(['status' => 'success', 'message' => 'Carátula actualizada']);
+    }
+
     // ------------------------------------------------------------------
     // Estado de directo: none | upcoming | live
     // ------------------------------------------------------------------
