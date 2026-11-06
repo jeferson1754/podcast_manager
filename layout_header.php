@@ -33,6 +33,17 @@ $episodiosAyer = (int) (consultar($conn, "SELECT COUNT(*) AS n FROM episodes WHE
 $diferencia = $episodiosHoy - $episodiosAyer;
 
 $flash = flash_pull();
+
+// Directos en curso (episodes.live_status = 'live')
+$directos = [];
+if (tiene_live_status($conn)) {
+    $directos = consultar($conn, "SELECT e.id, e.title, e.youtube_id, p.title AS podcast_title
+                                  FROM episodes e
+                                  LEFT JOIN seasons s ON s.id = e.season_id
+                                  LEFT JOIN podcasts p ON p.id = COALESCE(s.podcast_id, e.podcast_id)
+                                  WHERE e.live_status = 'live'
+                                  ORDER BY e.publish_date DESC");
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -87,7 +98,7 @@ $flash = flash_pull();
                 </div>
 
                 <ul class="nav nav-pills gap-1 align-items-center ms-auto">
-                    <?php foreach ([$podcast => 'Podcasts',$episodios => 'Episodios', $calendario => 'Calendario'] as $key => $label): ?>
+                    <?php foreach ([$podcast => 'Podcasts', $episodios => 'Episodios', $calendario => 'Calendario'] as $key => $label): ?>
                         <li class="nav-item">
                             <a class="nav-link <?= $section === $key ? 'active' : '' ?>" href="index.php?section=<?= h($key) ?>"><?= h($label) ?></a>
                         </li>
@@ -96,6 +107,28 @@ $flash = flash_pull();
             </div>
         </div>
     </nav>
+
+    <?php if ($directos): ?>
+        <div class="bg-danger text-white py-2">
+            <div class="container d-flex flex-wrap align-items-center gap-2 small">
+                <span class="fw-bold"><i class="fas fa-circle me-1" style="font-size:8px;vertical-align:middle;"></i> EN VIVO AHORA</span>
+                <?php foreach ($directos as $d): ?>
+                    <span class="d-inline-flex align-items-center gap-1">
+                        <strong><?= h($d['podcast_title'] ?? 'Podcast') ?></strong>
+                        <span class="text-white-50 text-truncate" style="max-width: 360px;"><?= h($d['title']) ?></span>
+                        <?php if (!empty($d['youtube_id'])): ?>
+                            <a class="btn btn-sm btn-light py-0 px-2" href="https://www.youtube.com/watch?v=<?= h(rawurlencode($d['youtube_id'])) ?>" target="_blank" rel="noopener">
+                                <i class="fab fa-youtube text-danger me-1"></i>Ver
+                            </a>
+                        <?php endif; ?>
+                    </span>
+                <?php endforeach; ?>
+                <?php if ($syncViejo): ?>
+                    <span class="ms-auto text-white-50"><i class="fas fa-exclamation-triangle me-1"></i>dato desactualizado (la sincronización no corre hace tiempo)</span>
+                <?php endif; ?>
+            </div>
+        </div>
+    <?php endif; ?>
 
     <div class="container">
         <?php if ($flash): ?>

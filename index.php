@@ -37,7 +37,7 @@ function img_logo(?string $src, string $icono = 'fa-image'): void
         <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
             <i class="fas <?= h($icono) ?>"></i>
         </div>
-    <?php }
+<?php }
 }
 
 /** Botón de eliminar: formulario POST con token CSRF y confirmación. */
@@ -80,7 +80,7 @@ function url_con(array $cambios): string
     return 'index.php?' . http_build_query(array_merge($_GET, $cambios));
 }
 
-$etiquetas = [$podcast => 'Podcast', $episodios => 'Episodio'];
+$etiquetas = [$podcast => 'Podcast', $temporadas => 'Temporada', $episodios => 'Episodio'];
 $tituloPagina = 'Podcast Manager — ' . ucfirst($section);
 
 include 'layout_header.php';
@@ -171,7 +171,10 @@ include 'layout_header.php';
                 </thead>
                 <tbody>
                     <?php
-                    $filas = consultar($conn, "SELECT p.*, c.name AS channel_name, c.image AS channel_image,
+                    $enVivoSql = tiene_live_status($conn)
+                        ? "(SELECT COUNT(*) FROM episodes e3 JOIN seasons s3 ON s3.id = e3.season_id WHERE s3.podcast_id = p.id AND e3.live_status = 'live')"
+                        : "0";
+                    $filas = consultar($conn, "SELECT p.*, $enVivoSql AS en_vivo, c.name AS channel_name, c.image AS channel_image,
                             (SELECT COUNT(*) FROM episodes e JOIN seasons s ON e.season_id = s.id WHERE s.podcast_id = p.id) AS total_episodios,
                             (SELECT number FROM seasons s WHERE s.podcast_id = p.id ORDER BY s.number DESC LIMIT 1) AS temporada_actual
                         FROM podcasts p
@@ -188,6 +191,9 @@ include 'layout_header.php';
                                     <a href="<?= h($p['description']) ?>" target="_blank" rel="noopener" class="fw-semibold text-dark text-decoration-none">
                                         <?= h($p['title']) ?>
                                     </a>
+                                    <?php if (!empty($p['en_vivo'])): ?>
+                                        <span class="badge bg-danger ms-1"><i class="fas fa-circle me-1" style="font-size:6px;vertical-align:middle;"></i>En vivo</span>
+                                    <?php endif; ?>
                                     <?php if (!empty($p['channel_name']) && mb_strtolower(trim($p['channel_name'])) !== mb_strtolower(trim($p['title']))): ?>
                                         <div class="small text-muted"><i class="fas fa-tv me-1"></i><?= h($p['channel_name']) ?></div>
                                     <?php endif; ?>
@@ -531,6 +537,10 @@ include 'layout_header.php';
         $index_hoy = array_search($dia_hoy, $orden_dias, true);
         $dayname_en = ['Lunes' => 'Monday', 'Martes' => 'Tuesday', 'Miercoles' => 'Wednesday', 'Jueves' => 'Thursday', 'Viernes' => 'Friday', 'Sabado' => 'Saturday', 'Domingo' => 'Sunday'];
 
+        $enVivoCal = tiene_live_status($conn)
+            ? "EXISTS(SELECT 1 FROM episodes e4 JOIN seasons s4 ON s4.id = e4.season_id WHERE s4.podcast_id = p.id AND e4.live_status = 'live')"
+            : "0";
+
         $scheduleData = [];
         foreach ($orden_dias as $index_dia => $day) {
             if ($index_dia < $index_hoy) {
@@ -556,7 +566,8 @@ include 'layout_header.php';
                     $conn,
                     "SELECT s.id AS schedule_id, s.start_time, p.id AS podcast_id, p.title,
                             COALESCE(NULLIF(p.image, ''), c.image) AS image,
-                            COALESCE((SELECT MAX(e.number) FROM episodes e JOIN seasons sn ON sn.id = e.season_id WHERE sn.podcast_id = p.id), 0) + 1 AS episodio
+                            COALESCE((SELECT MAX(e.number) FROM episodes e JOIN seasons sn ON sn.id = e.season_id WHERE sn.podcast_id = p.id), 0) + 1 AS episodio,
+                            $enVivoCal AS en_vivo
                      FROM schedule s
                      JOIN podcasts p ON s.podcast_id = p.id
                      LEFT JOIN channels c ON p.channel_id = c.id
@@ -588,11 +599,15 @@ include 'layout_header.php';
                                         <?php img_logo($item['image'] ?? '', 'fa-podcast'); ?>
                                         <div>
                                             <h6 class="mb-0 fw-semibold text-truncate" style="max-width:140px;"><?= h($item['title']) ?></h6>
+                                            <?php if (!empty($item['en_vivo'])): ?>
+                                                <span class="badge bg-danger"><i class="fas fa-circle me-1" style="font-size:6px;vertical-align:middle;"></i>En vivo</span>
+                                            <?php endif; ?>
                                             <span class="badge bg-light text-secondary border mt-1">Cap. <?= h($item['episodio']) ?></span>
                                             <div class="small text-muted mt-1"><i class="far fa-clock me-1"></i><?= h(date('H:i', strtotime($item['start_time']))) ?> hs</div>
                                         </div>
                                     </div>
-                                    <?php if ($i < $totalDia - 1): ?><hr class="my-3 text-light-emphasis"><?php endif; ?>
+                                    <?php if ($i < $totalDia - 1): ?>
+                                        <hr class="my-3 text-light-emphasis"><?php endif; ?>
                                 <?php endforeach;
                             else: ?>
                                 <div class="text-center py-4 text-muted">

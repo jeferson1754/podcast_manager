@@ -77,12 +77,13 @@ def guardar_historial_ejecucion(inicio, fin, estado, stats, mensaje=""):
     logger.log(
         nivel,
         "RESUMEN | estado=%s | inicio=%s | fin=%s | duracion=%ss | "
-        "episodios=%s | actualizados=%s | errores=%s%s",
+        "episodios=%s | en_vivo=%s | actualizados=%s | errores=%s%s",
         estado,
         inicio.strftime("%Y-%m-%d %H:%M:%S"),
         fin.strftime("%Y-%m-%d %H:%M:%S"),
         duracion,
         stats.get("episodios", 0),
+        stats.get("en_vivo", 0),
         stats.get("actualizados", 0),
         stats.get("errores", 0),
         f" | mensaje={mensaje}" if mensaje else "",
@@ -348,6 +349,23 @@ def enviar_mensaje_telegram(mensaje):
 # ------------------------------------------------------------------
 
 
+def estado_directo(video):
+    """
+    Estado de transmisión de un video según YouTube:
+      'live'     -> transmitiendo ahora
+      'upcoming' -> directo programado que aún no empieza
+      'none'     -> video normal o directo ya terminado
+    """
+    lb = (video.get("snippet", {}) or {}).get("liveBroadcastContent", "none")
+    if lb in ("live", "upcoming"):
+        return lb
+    # Respaldo: tiene hora de inicio real, pero no de término -> sigue en vivo
+    live = video.get("liveStreamingDetails", {}) or {}
+    if live.get("actualStartTime") and not live.get("actualEndTime"):
+        return "live"
+    return "none"
+
+
 def obtener_videos_playlist_api(url_or_playlist_id, api_key):
     """
     Devuelve {youtube_id: info} con TODOS los videos de la playlist (con paginación).
@@ -390,6 +408,7 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
                 "duration": "00:00:00",
                 "actual_start_time": None,
                 "es_directo_finalizado": False,
+                "live_status": "none",      # none | upcoming | live
                 "podcast_name": None,   # se completa más abajo
             }
 
@@ -397,11 +416,12 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
         if not page_token:
             break
 
-    # 2. Detalles en lote (duración + datos de directo)
+    # 2. Detalles en lote (duración + datos de directo).
+    #    'snippet' trae liveBroadcastContent (live/upcoming/none); no cuesta cuota extra.
     ids = list(item_map.keys())
     for i in range(0, len(ids), 50):
         resp = youtube.videos().list(
-            part="contentDetails,liveStreamingDetails",
+            part="snippet,contentDetails,liveStreamingDetails",
             id=",".join(ids[i:i + 50]),
         ).execute()
 
@@ -412,6 +432,9 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
 
             info["duration"] = parsear_duracion_iso(
                 v.get("contentDetails", {}).get("duration", "PT0S"))
+
+            # ¿Está en vivo / programado ahora?
+            info["live_status"] = estado_directo(v)
 
             live = v.get("liveStreamingDetails", {})
             inicio = utc_a_chile(live.get("actualStartTime"))
@@ -444,6 +467,16 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
 # ------------------------------------------------------------------
 # SINCRONIZACIÓN CON LA BD (vía PHP)
 # ------------------------------------------------------------------
+
+
+def notificar_directos(directos):
+    """Avisa por log y Telegram cada directo que EMPEZÓ desde la última ejecución."""
+    for v in directos:
+        podcast = v.get("podcast_name") or v.get("channel_name") or "Canal"
+        logger.info(f"  🔴 EN VIVO ahora: {podcast} — {v['title']}")
+        enviar_mensaje_telegram(
+            f"🔴 EN VIVO ahora\n{podcast}\n{v['title']}\n"
+            f"https://www.youtube.com/watch?v={v['youtube_id']}")
 
 
 def corregir_podcasts(driver, php_endpoint, db_map, stats):
@@ -502,9 +535,17 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
         if ep and ep.get("youtube_id") is not None
     }
 
+    nuevos_en_vivo = []   # directos que empezaron desde la última ejecución
+
     # 1. Videos de la playlist
     for yt_id, v in playlist_ids.items():
         ep = db_map.get(yt_id)
+
+        # 0. ¿Está en vivo ahora? (cuenta y detecta el inicio del directo)
+        if v.get("live_status") == "live":
+            stats["en_vivo"] += 1
+            if ep is None or (ep.get("live_status") or "none") != "live":
+                nuevos_en_vivo.append(v)
 
         # 1a. Nuevo
         if ep is None:
@@ -521,6 +562,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
                 "status": "PENDING",
                 "publish_date": v["publish_date"],
                 "podcast_name": v.get("podcast_name") or "",
+                "live_status": v.get("live_status", "none"),
             })
             if res.get("status") in ("inserted", "updated"):
                 stats["actualizados"] += 1
@@ -572,6 +614,30 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
                     logger.error(
                         f"  ❌ Error actualizando fecha de {yt_id}: {res}")
 
+        # 1e. Estado de directo (en vivo / programado / ninguno)
+        #     Solo si la BD ya tiene la columna live_status (migracion.sql)
+        if "live_status" in ep:
+            antes = ep.get("live_status") or "none"
+            ahora = v.get("live_status", "none")
+            if ahora != antes:
+                res = enviar_a_php_con_session(driver, php_endpoint, {
+                    "token": TOKEN_SECRET,
+                    "action": "actualizar_live_status",
+                    "youtube_id": yt_id,
+                    "live_status": ahora,
+                })
+                if res.get("status") == "success":
+                    if antes == "live" and ahora == "none":
+                        logger.info(f"  ⏹️ Directo finalizado: {v['title']}")
+                    else:
+                        logger.info(
+                            f"  📡 Estado de directo {antes} -> {ahora}: {v['title']}")
+                    stats["actualizados"] += 1
+                else:
+                    stats["errores"] += 1
+                    logger.error(
+                        f"  ❌ Error actualizando live_status de {yt_id}: {res}")
+
     # 2. Los que salieron de la playlist -> PUBLISHED
     for yt_id, ep in db_map.items():
         if yt_id not in playlist_ids and ep.get("status") != "PUBLISHED":
@@ -585,8 +651,27 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
             })
             stats["actualizados"] += 1
 
+    # 2b. Limpieza: un episodio que ya no está en la playlist no puede seguir "en vivo"
+    #     (evita que quede un directo fantasma si salió de la playlist antes de terminar)
+    for yt_id, ep in db_map.items():
+        if yt_id not in playlist_ids and (ep.get("live_status") or "none") != "none":
+            res = enviar_a_php_con_session(driver, php_endpoint, {
+                "token": TOKEN_SECRET,
+                "action": "actualizar_live_status",
+                "youtube_id": yt_id,
+                "live_status": "none",
+            })
+            if res.get("status") == "success":
+                logger.info(
+                    f"  🧹 Directo fuera de la playlist, se quita 'en vivo': {ep.get('title', yt_id)}")
+                stats["actualizados"] += 1
+
     # 3. Corregir podcast de episodios (nuevos y antiguos) según su título
     corregir_podcasts(driver, php_endpoint, db_map, stats)
+
+    # 4. Avisar de los directos que empezaron
+    if nuevos_en_vivo:
+        notificar_directos(nuevos_en_vivo)
 
 # ------------------------------------------------------------------
 # PROCESO PRINCIPAL
@@ -595,7 +680,7 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
 
 def procesar():
     inicio = datetime.now(TZ_CHILE)
-    stats = {"episodios": 0, "actualizados": 0, "errores": 0}
+    stats = {"episodios": 0, "en_vivo": 0, "actualizados": 0, "errores": 0}
     estado, mensaje = "OK", ""
     driver = None
 
@@ -629,6 +714,7 @@ def procesar():
         enviar_mensaje_telegram(
             "✅ Sincronización finalizada.\n"
             f"- Videos en playlist: {stats['episodios']}\n"
+            f"- En vivo ahora: {stats['en_vivo']}\n"
             f"- Cambios aplicados: {stats['actualizados']}\n"
             f"- Errores: {stats['errores']}")
 
