@@ -126,7 +126,6 @@ include 'layout_header.php';
                 (SELECT COUNT(*) FROM podcasts p WHERE p.state = 'Activo' AND NOT EXISTS (
                     SELECT 1 FROM episodes e JOIN seasons s ON s.id = e.season_id
                     WHERE s.podcast_id = p.id AND e.publish_date >= NOW() - INTERVAL 30 DAY)) AS sin_actividad")[0] ?? [];
-        $horasPend = round(((float) ($r['seg_pend'] ?? 0)) / 3600, 1);
         ?>
         <div class="row g-3 mb-4">
             <div class="col-6 col-lg-3">
@@ -142,15 +141,24 @@ include 'layout_header.php';
                 </div>
             </div>
             <div class="col-6 col-lg-3">
+                <?php
+                $seg_pend = (int) ($r['seg_pend'] ?? 0);
+
+                $horas = floor($seg_pend / 3600);
+                $minutos = floor(($seg_pend % 3600) / 60);
+                ?>
+
                 <div class="stat-card">
-                    <div class="stat-value"><?= h(number_format($horasPend, 1, ',', '.')) ?> h</div>
+                    <div class="stat-value">
+                        <?= h("{$horas}h {$minutos}min") ?>
+                    </div>
                     <div class="stat-label"><i class="far fa-clock me-1"></i>Por escuchar</div>
                 </div>
             </div>
             <div class="col-6 col-lg-3">
                 <div class="stat-card">
                     <div class="stat-value <?= ((int) ($r['sin_actividad'] ?? 0)) > 0 ? 'text-warning' : '' ?>"><?= (int) ($r['sin_actividad'] ?? 0) ?></div>
-                    <div class="stat-label"><i class="fas fa-moon me-1"></i>Activos sin episodios en 30 días</div>
+                    <div class="stat-label"><i class="fas fa-moon me-1"></i>Sin Actividad (+30 días)</div>
                 </div>
             </div>
         </div>
