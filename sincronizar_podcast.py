@@ -366,6 +366,107 @@ def estado_directo(video):
     return "none"
 
 
+def fecha_publicacion_real(video):
+    """
+    Fecha que debe tener un episodio, en hora de Chile ('YYYY-MM-DD HH:MM:SS'):
+      - Directo (en curso o terminado): HORA DE INICIO del directo (actualStartTime).
+      - Directo programado que aún no empieza: la hora programada (scheduledStartTime).
+      - Video normal: su fecha de publicación (snippet.publishedAt).
+    OJO: playlistItems.publishedAt NO sirve: es la fecha en que se agregó a la playlist.
+    """
+    live = video.get("liveStreamingDetails", {}) or {}
+    snip = video.get("snippet", {}) or {}
+    if live.get("actualStartTime"):
+        return utc_a_chile(live["actualStartTime"])
+    if live.get("scheduledStartTime") and snip.get("liveBroadcastContent") == "upcoming":
+        return utc_a_chile(live["scheduledStartTime"])
+    return utc_a_chile(snip.get("publishedAt"))
+
+
+def verificar_ultimos_episodios(driver, php_endpoint, api_key, stats, cantidad=3):
+    """
+    Revisa los últimos `cantidad` episodios de CADA podcast contra YouTube:
+      - si el título cambió, lo actualiza;
+      - si la fecha de publicación no es la correcta, la corrige
+        (en los directos, la fecha es la hora de inicio del en vivo).
+    Cuesta 1 unidad de cuota por cada 50 videos.
+    """
+    res = enviar_a_php_con_session(driver, php_endpoint, {
+        "token": TOKEN_SECRET,
+        "action": "obtener_ultimos_episodios",
+        "cantidad": cantidad,
+    })
+    if not isinstance(res, dict) or res.get("status") != "success":
+        logger.warning(f"⚠️ No se pudieron leer los últimos episodios: {res}")
+        return
+
+    episodios = [e for e in res.get("episodios", []) if e.get("youtube_id")]
+    if not episodios:
+        return
+    logger.info(
+        f"🔎 Verificando los últimos {cantidad} episodios de cada podcast "
+        f"({len(episodios)} videos)...")
+
+    youtube = build("youtube", "v3", developerKey=api_key)
+    ids = list(dict.fromkeys(str(e["youtube_id"]).strip() for e in episodios))
+    detalles = {}
+    for i in range(0, len(ids), 50):
+        resp = youtube.videos().list(
+            part="snippet,liveStreamingDetails",
+            id=",".join(ids[i:i + 50]),
+        ).execute()
+        for v in resp.get("items", []):
+            detalles[v["id"]] = v
+
+    for ep in episodios:
+        yt_id = str(ep["youtube_id"]).strip()
+        v = detalles.get(yt_id)
+        if v is None:
+            # Privado, eliminado o no disponible: no se toca nada
+            logger.warning(f"  ⚠️ Video no disponible en YouTube, se omite: {ep.get('title')}")
+            continue
+        stats["verificados"] += 1
+
+        # 1. ¿Cambió el título?
+        titulo_yt = (v.get("snippet", {}).get("title") or "").strip()
+        titulo_bd = (ep.get("title") or "").strip()
+        if titulo_yt and titulo_yt != titulo_bd:
+            r = enviar_a_php_con_session(driver, php_endpoint, {
+                "token": TOKEN_SECRET,
+                "action": "actualizar_titulo",
+                "youtube_id": yt_id,
+                "title": titulo_yt,
+            })
+            if r.get("status") == "success":
+                logger.info(f"  ✏️ Título cambió en YouTube: «{titulo_bd}» → «{titulo_yt}»")
+                stats["corregidos"] += 1
+                stats["actualizados"] += 1
+            else:
+                stats["errores"] += 1
+                logger.error(f"  ❌ Error actualizando título de {yt_id}: {r}")
+
+        # 2. ¿La fecha es la correcta?
+        fecha_ok = fecha_publicacion_real(v)
+        fecha_bd = str(ep.get("publish_date") or "")[:19]
+        if fecha_ok and fecha_ok != fecha_bd:
+            r = enviar_a_php_con_session(driver, php_endpoint, {
+                "token": TOKEN_SECRET,
+                "action": "actualizar_fecha",
+                "youtube_id": yt_id,
+                "publish_date": fecha_ok,
+            })
+            es_live = bool((v.get("liveStreamingDetails") or {}).get("actualStartTime"))
+            if r.get("status") == "success":
+                motivo = "inicio del directo" if es_live else "publicación del video"
+                logger.info(
+                    f"  📅 Fecha corregida ({motivo}): {fecha_bd or 'vacía'} → {fecha_ok} · {titulo_yt or titulo_bd}")
+                stats["corregidos"] += 1
+                stats["actualizados"] += 1
+            else:
+                stats["errores"] += 1
+                logger.error(f"  ❌ Error corrigiendo fecha de {yt_id}: {r}")
+
+
 def obtener_videos_playlist_api(url_or_playlist_id, api_key):
     """
     Devuelve {youtube_id: info} con TODOS los videos de la playlist (con paginación).
@@ -435,6 +536,12 @@ def obtener_videos_playlist_api(url_or_playlist_id, api_key):
 
             # ¿Está en vivo / programado ahora?
             info["live_status"] = estado_directo(v)
+
+            # Fecha REAL (inicio del directo o publicación del video). La de la playlist
+            # es la fecha en que se agregó a la lista, no la del video.
+            real = fecha_publicacion_real(v)
+            if real:
+                info["publish_date"] = real
 
             live = v.get("liveStreamingDetails", {})
             inicio = utc_a_chile(live.get("actualStartTime"))
@@ -680,7 +787,8 @@ def sincronizar_playlist_global(driver, php_endpoint, playlist_ids, stats):
 
 def procesar():
     inicio = datetime.now(TZ_CHILE)
-    stats = {"episodios": 0, "en_vivo": 0, "actualizados": 0, "errores": 0}
+    stats = {"episodios": 0, "en_vivo": 0, "actualizados": 0, "errores": 0,
+             "verificados": 0, "corregidos": 0}
     estado, mensaje = "OK", ""
     driver = None
 
@@ -704,6 +812,13 @@ def procesar():
         stats["episodios"] = len(playlist_ids)
         logger.info(f"  ✅ {len(playlist_ids)} videos en la playlist.")
 
+        # Primero se verifican los últimos episodios de cada podcast (título y fecha),
+        # así la sincronización y la reasignación de podcast trabajan con datos al día.
+        try:
+            verificar_ultimos_episodios(driver, PHP_ENDPOINT, API_KEY, stats)
+        except Exception as e:
+            logger.error(f"⚠️ Falló la verificación de últimos episodios: {e}")
+
         sincronizar_playlist_global(driver, PHP_ENDPOINT, playlist_ids, stats)
 
         enviar_a_php_con_session(driver, PHP_ENDPOINT, {
@@ -715,6 +830,8 @@ def procesar():
             "✅ Sincronización finalizada.\n"
             f"- Videos en playlist: {stats['episodios']}\n"
             f"- En vivo ahora: {stats['en_vivo']}\n"
+            f"- Últimos episodios verificados: {stats['verificados']} "
+            f"(corregidos: {stats['corregidos']})\n"
             f"- Cambios aplicados: {stats['actualizados']}\n"
             f"- Errores: {stats['errores']}")
 

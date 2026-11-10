@@ -388,6 +388,48 @@ try {
     // Registrar fin de sincronización
     // ------------------------------------------------------------------
     // ------------------------------------------------------------------
+    // Los últimos N episodios de CADA podcast (para verificar título y fecha contra YouTube)
+    // ------------------------------------------------------------------
+    if ($action === 'obtener_ultimos_episodios') {
+        $n = max(1, min(10, (int) param('cantidad', 3)));
+        $filas = $pdo->query("
+            SELECT e.*,
+                   COALESCE(s.podcast_id, e.podcast_id) AS podcast_id_actual,
+                   p.title AS podcast_title
+            FROM episodes e
+            LEFT JOIN seasons  s ON s.id = e.season_id
+            LEFT JOIN podcasts p ON p.id = COALESCE(s.podcast_id, e.podcast_id)
+            WHERE e.youtube_id IS NOT NULL AND e.youtube_id <> ''
+            ORDER BY podcast_id_actual, e.publish_date DESC, e.id DESC
+        ")->fetchAll();
+
+        // Se conservan solo los N más recientes de cada podcast (sin funciones de ventana: compatible con MySQL 5.x)
+        $porPodcast = [];
+        $ultimos = [];
+        foreach ($filas as $f) {
+            $k = (string) ($f['podcast_id_actual'] ?? 'sin_podcast');
+            $porPodcast[$k] = ($porPodcast[$k] ?? 0) + 1;
+            if ($porPodcast[$k] <= $n) {
+                $ultimos[] = $f;
+            }
+        }
+        responder(['status' => 'success', 'episodios' => $ultimos]);
+    }
+
+    // ------------------------------------------------------------------
+    // Actualizar el título de un episodio (cambió en YouTube)
+    // ------------------------------------------------------------------
+    if ($action === 'actualizar_titulo') {
+        $ytId   = trim((string) param('youtube_id'));
+        $titulo = trim((string) param('title'));
+        if ($ytId === '' || $titulo === '' || mb_strlen($titulo) > TITULO_MAX) {
+            responder(['status' => 'error', 'message' => 'youtube_id o title inválidos']);
+        }
+        $pdo->prepare("UPDATE episodes SET title = ? WHERE youtube_id = ?")->execute([$titulo, $ytId]);
+        responder(['status' => 'success', 'message' => 'Título actualizado']);
+    }
+
+    // ------------------------------------------------------------------
     // Lista de podcasts con su canal (para detectar canales con varios podcasts y revisar carátulas)
     // ------------------------------------------------------------------
     if ($action === 'obtener_todos_podcasts') {
@@ -491,7 +533,6 @@ try {
     }
 
     responder(['status' => 'error', 'message' => 'Acción no válida']);
-
 } catch (Throwable $e) {
     http_response_code(500);
     responder(['status' => 'error', 'message' => 'Error en acción ' . $action . ': ' . $e->getMessage()]);
