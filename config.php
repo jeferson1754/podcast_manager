@@ -12,3 +12,7 @@ define('SYNC_ALERTA_HORAS', 12);
 
 // true solo mientras desarrollas (muestra errores en pantalla)
 define('APP_DEBUG', false);
+ 
+// Minutos de tolerancia antes de marcar un episodio como "Atrasado" en el calendario
+define('CALENDARIO_GRACIA_MIN', 60);
+ 

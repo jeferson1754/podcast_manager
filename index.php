@@ -7,9 +7,12 @@ require_once 'horarios.php';
 
 // Sección: solo valores conocidos (lista blanca)
 $section = $_GET['section'] ?? $podcast;
-if (!is_string($section) || !in_array($section, [$podcast, $episodios, $calendario], true)) {
+if (!is_string($section) || !in_array($section, [$podcast, $temporadas, $episodios, $calendario], true)) {
     $section = $podcast;
 }
+
+// Calendario: 'esperado' (compara lo subido con el horario y avisa atrasos) o 'real' (solo lo subido)
+$modoCalendario = (($_GET['modo'] ?? '') === 'real') ? 'real' : 'esperado';
 
 // ------------------------------------------------------------------
 // Acción: recalcular horarios del calendario (POST + CSRF)
@@ -101,13 +104,25 @@ include 'layout_header.php';
                 </a>
             <?php endif; ?>
             <?php if ($section === $calendario): ?>
-                <form method="post" class="d-inline">
-                    <?= csrf_field() ?>
-                    <input type="hidden" name="accion" value="recalcular_horarios">
-                    <button class="btn btn-outline-primary d-inline-flex align-items-center gap-2" type="submit">
-                        <i class="fas fa-rotate"></i> <span>Recalcular horarios</span>
-                    </button>
-                </form>
+                <div class="btn-group" role="group" aria-label="Modo del calendario">
+                    <a class="btn btn-outline-secondary <?= $modoCalendario === 'esperado' ? 'active' : '' ?>"
+                        href="index.php?section=<?= h($calendario) ?>" title="Compara lo subido con el horario y avisa atrasos">
+                        <i class="fas fa-bell me-1"></i> Con avisos
+                    </a>
+                    <a class="btn btn-outline-secondary <?= $modoCalendario === 'real' ? 'active' : '' ?>"
+                        href="index.php?section=<?= h($calendario) ?>&modo=real" title="Solo los episodios realmente subidos, sin cálculo">
+                        <i class="fas fa-check me-1"></i> Solo subidos
+                    </a>
+                </div>
+                <?php if ($modoCalendario === 'esperado'): ?>
+                    <form method="post" class="d-inline">
+                        <?= csrf_field() ?>
+                        <input type="hidden" name="accion" value="recalcular_horarios">
+                        <button class="btn btn-outline-primary d-inline-flex align-items-center gap-2" type="submit">
+                            <i class="fas fa-rotate"></i> <span>Recalcular horarios</span>
+                        </button>
+                    </form>
+                <?php endif; ?>
             <?php else: ?>
                 <a href="add.php?type=<?= urlencode($section) ?>" class="btn btn-primary d-inline-flex align-items-center gap-2">
                     <i class="fas fa-plus"></i> <span>Nuevo <?= h($etiquetas[$section]) ?></span>
@@ -126,6 +141,7 @@ include 'layout_header.php';
                 (SELECT COUNT(*) FROM podcasts p WHERE p.state = 'Activo' AND NOT EXISTS (
                     SELECT 1 FROM episodes e JOIN seasons s ON s.id = e.season_id
                     WHERE s.podcast_id = p.id AND e.publish_date >= NOW() - INTERVAL 30 DAY)) AS sin_actividad")[0] ?? [];
+        $horasPend = round(((float) ($r['seg_pend'] ?? 0)) / 3600, 1);
         ?>
         <div class="row g-3 mb-4">
             <div class="col-6 col-lg-3">
@@ -533,85 +549,239 @@ include 'layout_header.php';
 
     <?php elseif ($section === $calendario): ?>
         <?php
-        // Los horarios ya no se recalculan en cada visita: solo si nunca se calcularon o tienen +24 h.
-        if (horarios_desactualizados($conn, 24)) {
-            recalcular_horarios($conn);
-        }
-        $ultimoCalculo = consultar($conn, "SELECT setting_value FROM site_settings WHERE setting_key = 'schedule_updated_at'")[0]['setting_value'] ?? null;
+        // =====================================================================================
+        // CALENDARIO SEMANAL (lunes a domingo de la semana actual)
+        //  - Todo lo SUBIDO sale de los episodios reales (fecha de publicación; en directos, la de inicio).
+        //  - Modo 'esperado': además se compara con el horario de cada podcast ACTIVO y se avisa:
+        //        Atrasado      -> hoy, ya pasó la hora esperada (+ gracia) y no hay episodio
+        //        No se subió   -> un día anterior de esta semana, tenía horario y no hubo episodio
+        //        Esperado      -> aún no llega la hora
+        //  - Modo 'real': solo lo subido, sin horarios ni avisos.
+        // =====================================================================================
+        $modo = $modoCalendario;
+        $graciaMin = defined('CALENDARIO_GRACIA_MIN') ? (int) CALENDARIO_GRACIA_MIN : 60;
 
-        $dias_map = ['Domingo', 'Lunes', 'Martes', 'Miercoles', 'Jueves', 'Viernes', 'Sabado'];
-        $dia_hoy = $dias_map[(int) date('w')];
-        $orden_dias = DIAS_SEMANA;
-        $index_hoy = array_search($dia_hoy, $orden_dias, true);
-        $dayname_en = ['Lunes' => 'Monday', 'Martes' => 'Tuesday', 'Miercoles' => 'Wednesday', 'Jueves' => 'Thursday', 'Viernes' => 'Friday', 'Sabado' => 'Saturday', 'Domingo' => 'Sunday'];
+        $n = (int) date('N');
+        $lunes = new DateTime('today');
+        $lunes->modify('-' . ($n - 1) . ' days');
+        $inicioSemana = $lunes->format('Y-m-d H:i:s');
+        $finSemana = (clone $lunes)->modify('+7 days')->format('Y-m-d H:i:s');
+        $hoyStr = date('Y-m-d');
+        $ahora = time();
 
-        $enVivoCal = tiene_live_status($conn)
-            ? "EXISTS(SELECT 1 FROM episodes e4 JOIN seasons s4 ON s4.id = e4.season_id WHERE s4.podcast_id = p.id AND e4.live_status = 'live')"
-            : "0";
-
-        $scheduleData = [];
-        foreach ($orden_dias as $index_dia => $day) {
-            if ($index_dia < $index_hoy) {
-                // Días pasados de la semana: episodios REALES publicados
-                $scheduleData[$day] = consultar(
-                    $conn,
-                    "SELECT p.id AS podcast_id, p.title, COALESCE(NULLIF(p.image, ''), c.image) AS image,
-                            e.number AS episodio, TIME(e.publish_date) AS start_time
-                     FROM episodes e
-                     JOIN seasons sn ON e.season_id = sn.id
-                     JOIN podcasts p ON sn.podcast_id = p.id
-                     LEFT JOIN channels c ON p.channel_id = c.id
-                     WHERE p.state != 'Finalizado'
-                       AND DAYNAME(e.publish_date) = ?
-                       AND e.publish_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-                     ORDER BY e.publish_date ASC",
-                    's',
-                    [$dayname_en[$day]]
-                );
-            } else {
-                // Hoy y días futuros: horarios programados (fijos o calculados)
-                $scheduleData[$day] = consultar(
-                    $conn,
-                    "SELECT s.id AS schedule_id, s.start_time, p.id AS podcast_id, p.title,
-                            COALESCE(NULLIF(p.image, ''), c.image) AS image,
-                            COALESCE((SELECT MAX(e.number) FROM episodes e JOIN seasons sn ON sn.id = e.season_id WHERE sn.podcast_id = p.id), 0) + 1 AS episodio,
-                            $enVivoCal AS en_vivo
-                     FROM schedule s
-                     JOIN podcasts p ON s.podcast_id = p.id
-                     LEFT JOIN channels c ON p.channel_id = c.id
-                     WHERE p.state != 'Finalizado' AND s.day_of_week = ?
-                     ORDER BY s.start_time",
-                    's',
-                    [$day]
-                );
+        /** ¿Se esperaba un episodio ese día, según la frecuencia del podcast y su último episodio previo? */
+        function slot_esperado(?string $frecuencia, ?int $ultimoTs, int $diaTs): bool
+        {
+            $f = mb_strtolower(trim((string) $frecuencia), 'UTF-8');
+            if ($f === '' || mb_strpos($f, 'semanal') !== false) {
+                return true;                       // semanal (o sin dato): se espera cada semana
             }
+            if (mb_strpos($f, 'quincenal') !== false) {
+                $minDias = 10;
+            } elseif (mb_strpos($f, 'mensual') !== false) {
+                $minDias = 25;
+            } else {
+                return false;                      // esporádico / semestral / otro: nunca se avisa
+            }
+            return $ultimoTs === null || (($diaTs - $ultimoTs) / 86400) >= $minDias;
         }
+
+        $colLive = tiene_live_status($conn) ? 'e.live_status' : "'none'";
+        $subidos = consultar(
+            $conn,
+            "SELECT e.id, e.number, e.title, e.publish_date, e.youtube_id, $colLive AS live_status,
+                    p.id AS podcast_id, p.title AS podcast_title, COALESCE(NULLIF(p.image, ''), c.image) AS image
+             FROM episodes e
+             JOIN seasons sn ON sn.id = e.season_id
+             JOIN podcasts p ON p.id = sn.podcast_id
+             LEFT JOIN channels c ON c.id = p.channel_id
+             WHERE p.state != 'Finalizado' AND e.publish_date >= ? AND e.publish_date < ?
+             ORDER BY e.publish_date ASC",
+            'ss',
+            [$inicioSemana, $finSemana]
+        );
+
+        $slots = [];
+        $ultimoCalculo = null;
+        if ($modo === 'esperado') {
+            if (horarios_desactualizados($conn, 24)) {
+                recalcular_horarios($conn);
+            }
+            $ultimoCalculo = consultar($conn, "SELECT setting_value FROM site_settings WHERE setting_key = 'schedule_updated_at'")[0]['setting_value'] ?? null;
+            $slots = consultar(
+                $conn,
+                "SELECT s.day_of_week, s.start_time, s.is_manual, p.id AS podcast_id, p.title AS podcast_title, p.frequency,
+                        COALESCE(NULLIF(p.image, ''), c.image) AS image,
+                        COALESCE((SELECT MAX(e.number) FROM episodes e JOIN seasons sn ON sn.id = e.season_id WHERE sn.podcast_id = p.id), 0) + 1 AS siguiente,
+                        (SELECT MAX(e2.publish_date) FROM episodes e2 JOIN seasons sn2 ON sn2.id = e2.season_id
+                          WHERE sn2.podcast_id = p.id AND e2.publish_date < ?) AS ultimo_antes
+                 FROM schedule s
+                 JOIN podcasts p ON p.id = s.podcast_id
+                 LEFT JOIN channels c ON c.id = p.channel_id
+                 WHERE p.state = 'Activo'
+                 ORDER BY s.start_time",
+                's',
+                [$inicioSemana]
+            );
+        }
+
+        // Un episodio ya publicado -> elemento del calendario
+        $desdeEpisodio = function (array $e, ?array $slot) use ($ahora): array {
+            $ts = strtotime($e['publish_date']);
+            $live = $e['live_status'] ?? 'none';
+            $tipo = $live === 'live' ? 'en_vivo' : (($live === 'upcoming' || $ts > $ahora) ? 'programado' : 'subido');
+            return [
+                'tipo' => $tipo,
+                'ts' => $ts,
+                'hora' => date('H:i', $ts),
+                'title' => $e['podcast_title'],
+                'episodio' => $e['number'],
+                'image' => $e['image'] ?? '',
+                'esperado' => $slot ? substr($slot['start_time'], 0, 5) : null,
+                'estimado' => $slot ? !$slot['is_manual'] : false,
+            ];
+        };
+
+        $semana = [];
+        $resumen = ['subido' => 0, 'atrasado' => [], 'no_subio' => []];
+        foreach (DIAS_SEMANA as $i => $nombreDia) {
+            $fecha = (clone $lunes)->modify("+$i days")->format('Y-m-d');
+            $diaTs = strtotime($fecha);
+            $subDia = array_values(array_filter($subidos, fn($e) => substr($e['publish_date'], 0, 10) === $fecha));
+            $usado = [];
+            $items = [];
+
+            foreach ($slots as $sl) {
+                if ($sl['day_of_week'] !== $nombreDia) {
+                    continue;
+                }
+                $slotTs = strtotime($fecha . ' ' . $sl['start_time']);
+
+                // ¿Hubo un episodio de ese podcast ese día? (el más cercano al horario esperado)
+                $mejor = null;
+                $mejorDif = PHP_INT_MAX;
+                foreach ($subDia as $k => $e) {
+                    if (isset($usado[$k]) || (int) $e['podcast_id'] !== (int) $sl['podcast_id']) {
+                        continue;
+                    }
+                    $dif = abs(strtotime($e['publish_date']) - $slotTs);
+                    if ($dif < $mejorDif) {
+                        $mejor = $k;
+                        $mejorDif = $dif;
+                    }
+                }
+                if ($mejor !== null) {
+                    $usado[$mejor] = true;
+                    $items[] = $desdeEpisodio($subDia[$mejor], $sl);
+                    continue;
+                }
+
+                // Sin episodio: ¿se esperaba uno? (frecuencia + último episodio anterior a ese día)
+                $ultimoTs = $sl['ultimo_antes'] ? strtotime($sl['ultimo_antes']) : null;
+                foreach ($subidos as $e) {
+                    if ((int) $e['podcast_id'] === (int) $sl['podcast_id'] && substr($e['publish_date'], 0, 10) < $fecha) {
+                        $t = strtotime($e['publish_date']);
+                        if ($ultimoTs === null || $t > $ultimoTs) {
+                            $ultimoTs = $t;
+                        }
+                    }
+                }
+                if (!slot_esperado($sl['frequency'], $ultimoTs, $diaTs)) {
+                    continue;
+                }
+
+                if ($fecha < $hoyStr) {
+                    $tipo = 'no_subio';
+                    $resumen['no_subio'][] = $sl['podcast_title'] . ' (' . $nombreDia . ')';
+                } elseif ($fecha === $hoyStr && $slotTs + $graciaMin * 60 < $ahora) {
+                    $tipo = 'atrasado';
+                    $resumen['atrasado'][] = $sl['podcast_title'] . ' (' . substr($sl['start_time'], 0, 5) . ')';
+                } else {
+                    $tipo = 'esperado';
+                }
+                $items[] = [
+                    'tipo' => $tipo,
+                    'ts' => $slotTs,
+                    'hora' => substr($sl['start_time'], 0, 5),
+                    'title' => $sl['podcast_title'],
+                    'episodio' => $sl['siguiente'],
+                    'image' => $sl['image'] ?? '',
+                    'esperado' => null,
+                    'estimado' => !$sl['is_manual'],
+                ];
+            }
+
+            // Episodios subidos que no correspondían a ningún horario
+            foreach ($subDia as $k => $e) {
+                if (!isset($usado[$k])) {
+                    $items[] = $desdeEpisodio($e, null);
+                }
+            }
+            usort($items, fn($a, $b) => $a['ts'] <=> $b['ts']);
+            foreach ($items as $it) {
+                if ($it['tipo'] === 'subido' || $it['tipo'] === 'en_vivo') {
+                    $resumen['subido']++;
+                }
+            }
+            $semana[$nombreDia] = ['fecha' => $fecha, 'items' => $items, 'hoy' => $fecha === $hoyStr];
+        }
+
+        $insignias = [
+            'subido'     => ['bg-success', 'fa-check', 'Subido'],
+            'en_vivo'    => ['bg-danger', 'fa-circle', 'En vivo'],
+            'programado' => ['bg-info text-dark', 'fa-calendar', 'Programado'],
+            'atrasado'   => ['bg-warning text-dark', 'fa-hourglass-half', 'Atrasado'],
+            'no_subio'   => ['bg-danger', 'fa-xmark', 'No se subió'],
+            'esperado'   => ['bg-light text-secondary border', 'fa-clock', 'Esperado'],
+        ];
         ?>
-        <?php if ($ultimoCalculo): ?>
-            <p class="text-muted small mb-3"><i class="far fa-clock me-1"></i>Horarios calculados: <?= h(fecha_corta($ultimoCalculo)) ?></p>
+
+        <?php if ($modo === 'esperado'): ?>
+            <?php if ($resumen['atrasado']): ?>
+                <div class="alert alert-warning py-2 small">
+                    <i class="fas fa-hourglass-half me-1"></i><strong>Atrasados hoy:</strong> <?= h(implode(', ', $resumen['atrasado'])) ?>
+                </div>
+            <?php endif; ?>
+            <?php if ($resumen['no_subio']): ?>
+                <div class="alert alert-danger py-2 small">
+                    <i class="fas fa-xmark me-1"></i><strong>No se subieron esta semana:</strong> <?= h(implode(', ', $resumen['no_subio'])) ?>
+                </div>
+            <?php endif; ?>
+            <p class="text-muted small mb-3">
+                <i class="fas fa-circle-info me-1"></i>
+                <?= (int) $resumen['subido'] ?> subido(s) esta semana. Un episodio se marca <em>Atrasado</em> si pasan <?= $graciaMin ?> min de la hora esperada.
+                <i class="far fa-clock ms-2 me-1"></i>"~" = horario estimado automáticamente (no fijado a mano).
+                <?php if ($ultimoCalculo): ?> Horarios calculados: <?= h(fecha_corta($ultimoCalculo)) ?>.<?php endif; ?>
+            </p>
+        <?php else: ?>
+            <p class="text-muted small mb-3"><i class="fas fa-check me-1"></i>Solo se muestran los episodios realmente subidos esta semana (<?= (int) $resumen['subido'] ?>).</p>
         <?php endif; ?>
 
         <div class="row g-3">
-            <?php foreach ($orden_dias as $day): $esHoy = ($day === $dia_hoy); ?>
+            <?php foreach ($semana as $nombreDia => $dia): ?>
                 <div class="col-md-6 col-lg-3">
-                    <div class="card h-100 schedule-card <?= $esHoy ? 'is-today' : '' ?>">
+                    <div class="card h-100 schedule-card <?= $dia['hoy'] ? 'is-today' : '' ?>">
                         <div class="card-header bg-light border-0 fw-bold py-3 d-flex align-items-center justify-content-between">
-                            <span><?= h($day) ?></span>
-                            <?php if ($esHoy): ?><span class="badge bg-white text-primary fw-normal">Hoy</span><?php endif; ?>
+                            <span><?= h($nombreDia) ?> <span class="text-muted fw-normal small"><?= h(date('d/m', strtotime($dia['fecha']))) ?></span></span>
+                            <?php if ($dia['hoy']): ?><span class="badge bg-white text-primary fw-normal">Hoy</span><?php endif; ?>
                         </div>
                         <div class="card-body p-3">
-                            <?php if (!empty($scheduleData[$day])):
-                                $totalDia = count($scheduleData[$day]);
-                                foreach ($scheduleData[$day] as $i => $item): ?>
+                            <?php if ($dia['items']):
+                                $totalDia = count($dia['items']);
+                                foreach ($dia['items'] as $i => $it):
+                                    [$claseB, $iconoB, $textoB] = $insignias[$it['tipo']]; ?>
                                     <div class="d-flex align-items-center gap-3">
-                                        <?php img_logo($item['image'] ?? '', 'fa-podcast'); ?>
-                                        <div>
-                                            <h6 class="mb-0 fw-semibold text-truncate" style="max-width:140px;"><?= h($item['title']) ?></h6>
-                                            <?php if (!empty($item['en_vivo'])): ?>
-                                                <span class="badge bg-danger"><i class="fas fa-circle me-1" style="font-size:6px;vertical-align:middle;"></i>En vivo</span>
-                                            <?php endif; ?>
-                                            <span class="badge bg-light text-secondary border mt-1">Cap. <?= h($item['episodio']) ?></span>
-                                            <div class="small text-muted mt-1"><i class="far fa-clock me-1"></i><?= h(date('H:i', strtotime($item['start_time']))) ?> hs</div>
+                                        <?php img_logo($it['image'], 'fa-podcast'); ?>
+                                        <div style="min-width:0;">
+                                            <h6 class="mb-0 fw-semibold text-truncate" style="max-width:150px;"><?= h($it['title']) ?></h6>
+                                            <span class="badge <?= $claseB ?> mt-1"><i class="fas <?= $iconoB ?> me-1" style="font-size:.7em;"></i><?= $textoB ?></span>
+                                            <span class="badge bg-light text-secondary border mt-1">Cap. <?= h($it['episodio']) ?></span>
+                                            <div class="small text-muted mt-1">
+                                                <i class="far fa-clock me-1"></i><?= ($it['estimado'] && in_array($it['tipo'], ['esperado', 'atrasado', 'no_subio'], true)) ? '~' : '' ?><?= h($it['hora']) ?> hs
+                                                <?php if ($it['esperado'] && $it['esperado'] !== $it['hora']): ?>
+                                                    <span class="ms-1">(esperado <?= h($it['esperado']) ?>)</span>
+                                                <?php endif; ?>
+                                            </div>
                                         </div>
                                     </div>
                                     <?php if ($i < $totalDia - 1): ?>
@@ -620,7 +790,7 @@ include 'layout_header.php';
                             else: ?>
                                 <div class="text-center py-4 text-muted">
                                     <i class="fas fa-calendar-minus fs-3 mb-2 d-block opacity-50"></i>
-                                    <span class="small">Sin podcasts</span>
+                                    <span class="small">Sin episodios</span>
                                 </div>
                             <?php endif; ?>
                         </div>
