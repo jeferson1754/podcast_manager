@@ -40,7 +40,7 @@ function img_logo(?string $src, string $icono = 'fa-image'): void
         <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
             <i class="fas <?= h($icono) ?>"></i>
         </div>
-    <?php }
+<?php }
 }
 
 /** Botón de eliminar: formulario POST con token CSRF y confirmación. */
@@ -157,8 +157,17 @@ include 'layout_header.php';
                 </div>
             </div>
             <div class="col-6 col-lg-3">
+                <?php
+                $seg_pend = (int) ($r['seg_pend'] ?? 0);
+
+                $horas = floor($seg_pend / 3600);
+                $minutos = floor(($seg_pend % 3600) / 60);
+                ?>
+
                 <div class="stat-card">
-                    <div class="stat-value"><?= h(number_format($horasPend, 1, ',', '.')) ?> h</div>
+                    <div class="stat-value">
+                        <?= h("{$horas}h {$minutos}min") ?>
+                    </div>
                     <div class="stat-label"><i class="far fa-clock me-1"></i>Por escuchar</div>
                 </div>
             </div>
@@ -625,8 +634,13 @@ include 'layout_header.php';
             $live = $e['live_status'] ?? 'none';
             $tipo = $live === 'live' ? 'en_vivo' : (($live === 'upcoming' || $ts > $ahora) ? 'programado' : 'subido');
             return [
-                'tipo' => $tipo, 'ts' => $ts, 'hora' => date('H:i', $ts), 'title' => $e['podcast_title'], 'episodio' => $e['number'],
-                'image' => $e['image'] ?? '', 'esperado' => $slot ? substr($slot['start_time'], 0, 5) : null,
+                'tipo' => $tipo,
+                'ts' => $ts,
+                'hora' => date('H:i', $ts),
+                'title' => $e['podcast_title'],
+                'episodio' => $e['number'],
+                'image' => $e['image'] ?? '',
+                'esperado' => $slot ? substr($slot['start_time'], 0, 5) : null,
                 'estimado' => $slot ? !$slot['is_manual'] : false,
             ];
         };
@@ -726,8 +740,14 @@ include 'layout_header.php';
                     $tipo = 'esperado';
                 }
                 $items[] = [
-                    'tipo' => $tipo, 'ts' => $slotTs, 'hora' => substr($sl['start_time'], 0, 5), 'title' => $sl['podcast_title'],
-                    'episodio' => $sl['siguiente'], 'image' => $sl['image'] ?? '', 'esperado' => null, 'estimado' => !$sl['is_manual'],
+                    'tipo' => $tipo,
+                    'ts' => $slotTs,
+                    'hora' => substr($sl['start_time'], 0, 5),
+                    'title' => $sl['podcast_title'],
+                    'episodio' => $sl['siguiente'],
+                    'image' => $sl['image'] ?? '',
+                    'esperado' => null,
+                    'estimado' => !$sl['is_manual'],
                 ];
             }
 
@@ -811,7 +831,8 @@ include 'layout_header.php';
                                             </div>
                                         </div>
                                     </div>
-                                    <?php if ($i < $totalDia - 1): ?><hr class="my-3 text-light-emphasis"><?php endif; ?>
+                                    <?php if ($i < $totalDia - 1): ?>
+                                        <hr class="my-3 text-light-emphasis"><?php endif; ?>
                                 <?php endforeach;
                             else: ?>
                                 <div class="text-center py-4 text-muted">
