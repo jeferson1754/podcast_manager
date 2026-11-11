@@ -7,7 +7,7 @@ require_once 'horarios.php';
 
 // Sección: solo valores conocidos (lista blanca)
 $section = $_GET['section'] ?? $podcast;
-if (!is_string($section) || !in_array($section, [$podcast, $temporadas, $episodios, $calendario], true)) {
+if (!is_string($section) || !in_array($section, [$podcast, $episodios, $calendario], true)) {
     $section = $podcast;
 }
 
@@ -40,7 +40,7 @@ function img_logo(?string $src, string $icono = 'fa-image'): void
         <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
             <i class="fas <?= h($icono) ?>"></i>
         </div>
-<?php }
+    <?php }
 }
 
 /** Botón de eliminar: formulario POST con token CSRF y confirmación. */
@@ -83,7 +83,7 @@ function url_con(array $cambios): string
     return 'index.php?' . http_build_query(array_merge($_GET, $cambios));
 }
 
-$etiquetas = [$podcast => 'Podcast', $temporadas => 'Temporada', $episodios => 'Episodio'];
+$etiquetas = [$podcast => 'Podcast', $episodios => 'Episodio'];
 $tituloPagina = 'Podcast Manager — ' . ucfirst($section);
 
 include 'layout_header.php';
@@ -157,24 +157,15 @@ include 'layout_header.php';
                 </div>
             </div>
             <div class="col-6 col-lg-3">
-                <?php
-                $seg_pend = (int) ($r['seg_pend'] ?? 0);
-
-                $horas = floor($seg_pend / 3600);
-                $minutos = floor(($seg_pend % 3600) / 60);
-                ?>
-
                 <div class="stat-card">
-                    <div class="stat-value">
-                        <?= h("{$horas}h {$minutos}min") ?>
-                    </div>
+                    <div class="stat-value"><?= h(number_format($horasPend, 1, ',', '.')) ?> h</div>
                     <div class="stat-label"><i class="far fa-clock me-1"></i>Por escuchar</div>
                 </div>
             </div>
             <div class="col-6 col-lg-3">
                 <div class="stat-card">
                     <div class="stat-value <?= ((int) ($r['sin_actividad'] ?? 0)) > 0 ? 'text-warning' : '' ?>"><?= (int) ($r['sin_actividad'] ?? 0) ?></div>
-                    <div class="stat-label"><i class="fas fa-moon me-1"></i>Sin Actividad (+30 días)</div>
+                    <div class="stat-label"><i class="fas fa-moon me-1"></i>Activos sin episodios en 30 días</div>
                 </div>
             </div>
         </div>
@@ -560,6 +551,7 @@ include 'layout_header.php';
         // =====================================================================================
         $modo = $modoCalendario;
         $graciaMin = defined('CALENDARIO_GRACIA_MIN') ? (int) CALENDARIO_GRACIA_MIN : 60;
+        $diasInactivo = defined('CALENDARIO_INACTIVO_DIAS') ? (int) CALENDARIO_INACTIVO_DIAS : 30;
 
         $n = (int) date('N');
         $lunes = new DateTime('today');
@@ -614,7 +606,9 @@ include 'layout_header.php';
                         COALESCE(NULLIF(p.image, ''), c.image) AS image,
                         COALESCE((SELECT MAX(e.number) FROM episodes e JOIN seasons sn ON sn.id = e.season_id WHERE sn.podcast_id = p.id), 0) + 1 AS siguiente,
                         (SELECT MAX(e2.publish_date) FROM episodes e2 JOIN seasons sn2 ON sn2.id = e2.season_id
-                          WHERE sn2.podcast_id = p.id AND e2.publish_date < ?) AS ultimo_antes
+                          WHERE sn2.podcast_id = p.id AND e2.publish_date < ?) AS ultimo_antes,
+                        (SELECT MAX(e3.publish_date) FROM episodes e3 JOIN seasons sn3 ON sn3.id = e3.season_id
+                          WHERE sn3.podcast_id = p.id) AS ultima_publicacion
                  FROM schedule s
                  JOIN podcasts p ON p.id = s.podcast_id
                  LEFT JOIN channels c ON c.id = p.channel_id
@@ -631,16 +625,27 @@ include 'layout_header.php';
             $live = $e['live_status'] ?? 'none';
             $tipo = $live === 'live' ? 'en_vivo' : (($live === 'upcoming' || $ts > $ahora) ? 'programado' : 'subido');
             return [
-                'tipo' => $tipo,
-                'ts' => $ts,
-                'hora' => date('H:i', $ts),
-                'title' => $e['podcast_title'],
-                'episodio' => $e['number'],
-                'image' => $e['image'] ?? '',
-                'esperado' => $slot ? substr($slot['start_time'], 0, 5) : null,
+                'tipo' => $tipo, 'ts' => $ts, 'hora' => date('H:i', $ts), 'title' => $e['podcast_title'], 'episodio' => $e['number'],
+                'image' => $e['image'] ?? '', 'esperado' => $slot ? substr($slot['start_time'], 0, 5) : null,
                 'estimado' => $slot ? !$slot['is_manual'] : false,
             ];
         };
+
+        // Podcasts ACTIVOS sin ningún episodio en los últimos N días: no se les espera nada (se listan aparte)
+        $limiteInactivo = date('Y-m-d H:i:s', strtotime("-$diasInactivo days"));
+        $sinActividad = [];
+        if ($modo === 'esperado') {
+            $sinActividad = array_column(consultar(
+                $conn,
+                "SELECT p.title FROM podcasts p
+                 WHERE p.state = 'Activo'
+                   AND NOT EXISTS (SELECT 1 FROM episodes e JOIN seasons sn ON sn.id = e.season_id
+                                   WHERE sn.podcast_id = p.id AND e.publish_date >= ?)
+                 ORDER BY p.title",
+                's',
+                [$limiteInactivo]
+            ), 'title');
+        }
 
         $semana = [];
         $resumen = ['subido' => 0, 'atrasado' => [], 'no_subio' => []];
@@ -648,35 +653,56 @@ include 'layout_header.php';
             $fecha = (clone $lunes)->modify("+$i days")->format('Y-m-d');
             $diaTs = strtotime($fecha);
             $subDia = array_values(array_filter($subidos, fn($e) => substr($e['publish_date'], 0, 10) === $fecha));
-            $usado = [];
-            $items = [];
 
+            // Horarios de ese día (sin duplicados exactos podcast + hora)
+            $slotsDia = [];
             foreach ($slots as $sl) {
-                if ($sl['day_of_week'] !== $nombreDia) {
-                    continue;
+                if ($sl['day_of_week'] === $nombreDia) {
+                    $slotsDia[$sl['podcast_id'] . '|' . $sl['start_time']] = $sl;
                 }
+            }
+            $slotsDia = array_values($slotsDia);
+
+            // Emparejar cada horario con el episodio subido más cercano a su hora (asignación global:
+            // si un podcast tiene 2 horarios y sube 1 episodio, se asigna al horario que corresponde)
+            $pares = [];
+            foreach ($slotsDia as $a => $sl) {
+                $slotTs = strtotime($fecha . ' ' . $sl['start_time']);
+                foreach ($subDia as $k => $e) {
+                    if ((int) $e['podcast_id'] === (int) $sl['podcast_id']) {
+                        $pares[] = [abs(strtotime($e['publish_date']) - $slotTs), $a, $k];
+                    }
+                }
+            }
+            usort($pares, fn($x, $y) => $x[0] <=> $y[0]);
+            $slotCon = [];   // índice de horario => índice de episodio
+            $usado = [];     // índice de episodio => true
+            foreach ($pares as [$dif, $a, $k]) {
+                if (!isset($slotCon[$a]) && !isset($usado[$k])) {
+                    $slotCon[$a] = $k;
+                    $usado[$k] = true;
+                }
+            }
+
+            $items = [];
+            foreach ($slotsDia as $a => $sl) {
                 $slotTs = strtotime($fecha . ' ' . $sl['start_time']);
 
-                // ¿Hubo un episodio de ese podcast ese día? (el más cercano al horario esperado)
-                $mejor = null;
-                $mejorDif = PHP_INT_MAX;
-                foreach ($subDia as $k => $e) {
-                    if (isset($usado[$k]) || (int) $e['podcast_id'] !== (int) $sl['podcast_id']) {
-                        continue;
-                    }
-                    $dif = abs(strtotime($e['publish_date']) - $slotTs);
-                    if ($dif < $mejorDif) {
-                        $mejor = $k;
-                        $mejorDif = $dif;
-                    }
-                }
-                if ($mejor !== null) {
-                    $usado[$mejor] = true;
-                    $items[] = $desdeEpisodio($subDia[$mejor], $sl);
+                if (isset($slotCon[$a])) {                       // hubo episodio: se muestra lo real
+                    $items[] = $desdeEpisodio($subDia[$slotCon[$a]], $sl);
                     continue;
                 }
 
-                // Sin episodio: ¿se esperaba uno? (frecuencia + último episodio anterior a ese día)
+                // Sin episodio. ¿Corresponde avisar?
+                // a) el podcast debe tener actividad reciente (si no, se considera inactivo y se oculta)
+                $ventana = $diasInactivo;
+                if (mb_strpos(mb_strtolower((string) $sl['frequency'], 'UTF-8'), 'mensual') !== false) {
+                    $ventana = max($ventana, 45);                // un mensual no debe ocultarse justo cuando le toca
+                }
+                if (empty($sl['ultima_publicacion']) || strtotime($sl['ultima_publicacion']) < strtotime("-$ventana days")) {
+                    continue;
+                }
+                // b) por frecuencia: semanal siempre; quincenal/mensual según el último episodio previo a ese día
                 $ultimoTs = $sl['ultimo_antes'] ? strtotime($sl['ultimo_antes']) : null;
                 foreach ($subidos as $e) {
                     if ((int) $e['podcast_id'] === (int) $sl['podcast_id'] && substr($e['publish_date'], 0, 10) < $fecha) {
@@ -700,14 +726,8 @@ include 'layout_header.php';
                     $tipo = 'esperado';
                 }
                 $items[] = [
-                    'tipo' => $tipo,
-                    'ts' => $slotTs,
-                    'hora' => substr($sl['start_time'], 0, 5),
-                    'title' => $sl['podcast_title'],
-                    'episodio' => $sl['siguiente'],
-                    'image' => $sl['image'] ?? '',
-                    'esperado' => null,
-                    'estimado' => !$sl['is_manual'],
+                    'tipo' => $tipo, 'ts' => $slotTs, 'hora' => substr($sl['start_time'], 0, 5), 'title' => $sl['podcast_title'],
+                    'episodio' => $sl['siguiente'], 'image' => $sl['image'] ?? '', 'esperado' => null, 'estimado' => !$sl['is_manual'],
                 ];
             }
 
@@ -747,6 +767,13 @@ include 'layout_header.php';
                     <i class="fas fa-xmark me-1"></i><strong>No se subieron esta semana:</strong> <?= h(implode(', ', $resumen['no_subio'])) ?>
                 </div>
             <?php endif; ?>
+            <?php if ($sinActividad): ?>
+                <p class="text-muted small mb-2">
+                    <i class="fas fa-eye-slash me-1"></i>
+                    Sin avisos para <?= count($sinActividad) ?> podcast(s) activos sin episodios en los últimos <?= $diasInactivo ?> días:
+                    <?= h(implode(', ', array_slice($sinActividad, 0, 6))) ?><?= count($sinActividad) > 6 ? ' y ' . (count($sinActividad) - 6) . ' más' : '' ?>.
+                </p>
+            <?php endif; ?>
             <p class="text-muted small mb-3">
                 <i class="fas fa-circle-info me-1"></i>
                 <?= (int) $resumen['subido'] ?> subido(s) esta semana. Un episodio se marca <em>Atrasado</em> si pasan <?= $graciaMin ?> min de la hora esperada.
@@ -784,8 +811,7 @@ include 'layout_header.php';
                                             </div>
                                         </div>
                                     </div>
-                                    <?php if ($i < $totalDia - 1): ?>
-                                        <hr class="my-3 text-light-emphasis"><?php endif; ?>
+                                    <?php if ($i < $totalDia - 1): ?><hr class="my-3 text-light-emphasis"><?php endif; ?>
                                 <?php endforeach;
                             else: ?>
                                 <div class="text-center py-4 text-muted">

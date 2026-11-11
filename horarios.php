@@ -61,9 +61,12 @@ function recalcular_horarios(mysqli $conn): int
             }
             usort($patrones, fn($a, $b) => $b['count'] <=> $a['count']);
 
+            // Un patrón cuenta solo si se repite 2+ veces Y al menos el 40% de lo que se repite el principal.
+            // Así 2 subidas sueltas un viernes no crean un "horario" falso junto al martes real (15 subidas).
+            $minimo = max(2, (int) ceil(0.4 * ($patrones[0]['count'] ?? 0)));
             $diasUsados = [];
             foreach ($patrones as $p) {
-                if ($p['count'] >= 2 && !isset($diasUsados[$p['day']])) {
+                if ($p['count'] >= $minimo && !isset($diasUsados[$p['day']])) {
                     $diasUsados[$p['day']] = true;
                     $nuevos[] = [$p['day'], $p['time'], 0];
                 }
