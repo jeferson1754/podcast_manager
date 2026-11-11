@@ -103,6 +103,9 @@ if (tiene_live_status($conn)) {
                             <a class="nav-link <?= $section === $key ? 'active' : '' ?>" href="index.php?section=<?= h($key) ?>"><?= h($label) ?></a>
                         </li>
                     <?php endforeach; ?>
+                    <li class="nav-item">
+                        <a class="nav-link <?= $section === 'estadisticas' ? 'active' : '' ?>" href="estadisticas.php">Estadísticas</a>
+                    </li>
                 </ul>
             </div>
         </div>
