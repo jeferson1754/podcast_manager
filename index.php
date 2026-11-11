@@ -174,7 +174,7 @@ include 'layout_header.php';
             <div class="col-6 col-lg-3">
                 <div class="stat-card">
                     <div class="stat-value <?= ((int) ($r['sin_actividad'] ?? 0)) > 0 ? 'text-warning' : '' ?>"><?= (int) ($r['sin_actividad'] ?? 0) ?></div>
-                    <div class="stat-label"><i class="fas fa-moon me-1"></i>Activos sin episodios en 30 días</div>
+                    <div class="stat-label"><i class="fas fa-moon me-1"></i>Sin Actividad (+30 días)</div>
                 </div>
             </div>
         </div>
