@@ -20,6 +20,11 @@ define('ESTADISTICAS_UMBRAL_CARGA', 25);
 // Calendario: un podcast activo sin episodios en estos días deja de generar avisos (atrasado / no se subió)
 define('CALENDARIO_INACTIVO_DIAS', 30);
  
+define('HORARIOS_MIN_EPISODIOS', 2);
+ 
+// Estadísticas: un episodio pendiente que lleva MÁS de estos días en la playlist se lista como "rezagado"
+define('ESTADISTICAS_DIAS_REZAGADO', 7);
+
 // true solo mientras desarrollas (muestra errores en pantalla)
 define('APP_DEBUG', false);
  

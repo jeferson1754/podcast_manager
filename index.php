@@ -13,6 +13,20 @@ if (!is_string($section) || !in_array($section, [$podcast, $episodios, $calendar
 
 // Calendario: 'esperado' (compara lo subido con el horario y avisa atrasos) o 'real' (solo lo subido)
 $modoCalendario = (($_GET['modo'] ?? '') === 'real') ? 'real' : 'esperado';
+// Semana mostrada: 0 = actual, -1 = anterior ... (hasta -52), 1 = la próxima
+$semanaCalendario = max(-52, min(1, (int) (is_string($_GET['semana'] ?? null) ? $_GET['semana'] : 0)));
+
+function url_calendario(string $seccion, int $semana, string $modo): string
+{
+    $q = ['section' => $seccion];
+    if ($semana !== 0) {
+        $q['semana'] = $semana;
+    }
+    if ($modo === 'real') {
+        $q['modo'] = 'real';
+    }
+    return 'index.php?' . http_build_query($q);
+}
 
 // ------------------------------------------------------------------
 // Acción: recalcular horarios del calendario (POST + CSRF)
@@ -40,7 +54,7 @@ function img_logo(?string $src, string $icono = 'fa-image'): void
         <div class="img-thumb-preview d-flex align-items-center justify-content-center bg-light text-muted rounded">
             <i class="fas <?= h($icono) ?>"></i>
         </div>
-<?php }
+    <?php }
 }
 
 /** Botón de eliminar: formulario POST con token CSRF y confirmación. */
@@ -106,11 +120,11 @@ include 'layout_header.php';
             <?php if ($section === $calendario): ?>
                 <div class="btn-group" role="group" aria-label="Modo del calendario">
                     <a class="btn btn-outline-secondary <?= $modoCalendario === 'esperado' ? 'active' : '' ?>"
-                        href="index.php?section=<?= h($calendario) ?>" title="Compara lo subido con el horario y avisa atrasos">
+                        href="<?= h(url_calendario($calendario, $semanaCalendario, 'esperado')) ?>" title="Compara lo subido con el horario y avisa atrasos">
                         <i class="fas fa-bell me-1"></i> Con avisos
                     </a>
                     <a class="btn btn-outline-secondary <?= $modoCalendario === 'real' ? 'active' : '' ?>"
-                        href="index.php?section=<?= h($calendario) ?>&modo=real" title="Solo los episodios realmente subidos, sin cálculo">
+                        href="<?= h(url_calendario($calendario, $semanaCalendario, 'real')) ?>" title="Solo los episodios realmente subidos, sin cálculo">
                         <i class="fas fa-check me-1"></i> Solo subidos
                     </a>
                 </div>
@@ -565,6 +579,13 @@ include 'layout_header.php';
         $n = (int) date('N');
         $lunes = new DateTime('today');
         $lunes->modify('-' . ($n - 1) . ' days');
+        $semOff = $semanaCalendario;
+        if ($semOff !== 0) {
+            $lunes->modify(($semOff > 0 ? '+' : '') . $semOff . ' weeks');
+        }
+        // Los avisos (atrasado / no se subió) y los horarios solo tienen sentido para la semana actual y la próxima:
+        // en semanas pasadas el horario de hoy no refleja lo que se esperaba entonces, así que solo se muestra lo subido.
+        $mostrarAvisos = ($modo === 'esperado' && $semOff >= 0);
         $inicioSemana = $lunes->format('Y-m-d H:i:s');
         $finSemana = (clone $lunes)->modify('+7 days')->format('Y-m-d H:i:s');
         $hoyStr = date('Y-m-d');
@@ -604,7 +625,7 @@ include 'layout_header.php';
 
         $slots = [];
         $ultimoCalculo = null;
-        if ($modo === 'esperado') {
+        if ($mostrarAvisos) {
             if (horarios_desactualizados($conn, 24)) {
                 recalcular_horarios($conn);
             }
@@ -634,13 +655,8 @@ include 'layout_header.php';
             $live = $e['live_status'] ?? 'none';
             $tipo = $live === 'live' ? 'en_vivo' : (($live === 'upcoming' || $ts > $ahora) ? 'programado' : 'subido');
             return [
-                'tipo' => $tipo,
-                'ts' => $ts,
-                'hora' => date('H:i', $ts),
-                'title' => $e['podcast_title'],
-                'episodio' => $e['number'],
-                'image' => $e['image'] ?? '',
-                'esperado' => $slot ? substr($slot['start_time'], 0, 5) : null,
+                'tipo' => $tipo, 'ts' => $ts, 'hora' => date('H:i', $ts), 'title' => $e['podcast_title'], 'episodio' => $e['number'],
+                'image' => $e['image'] ?? '', 'esperado' => $slot ? substr($slot['start_time'], 0, 5) : null,
                 'estimado' => $slot ? !$slot['is_manual'] : false,
             ];
         };
@@ -648,7 +664,7 @@ include 'layout_header.php';
         // Podcasts ACTIVOS sin ningún episodio en los últimos N días: no se les espera nada (se listan aparte)
         $limiteInactivo = date('Y-m-d H:i:s', strtotime("-$diasInactivo days"));
         $sinActividad = [];
-        if ($modo === 'esperado') {
+        if ($mostrarAvisos) {
             $sinActividad = array_column(consultar(
                 $conn,
                 "SELECT p.title FROM podcasts p
@@ -740,14 +756,8 @@ include 'layout_header.php';
                     $tipo = 'esperado';
                 }
                 $items[] = [
-                    'tipo' => $tipo,
-                    'ts' => $slotTs,
-                    'hora' => substr($sl['start_time'], 0, 5),
-                    'title' => $sl['podcast_title'],
-                    'episodio' => $sl['siguiente'],
-                    'image' => $sl['image'] ?? '',
-                    'esperado' => null,
-                    'estimado' => !$sl['is_manual'],
+                    'tipo' => $tipo, 'ts' => $slotTs, 'hora' => substr($sl['start_time'], 0, 5), 'title' => $sl['podcast_title'],
+                    'episodio' => $sl['siguiente'], 'image' => $sl['image'] ?? '', 'esperado' => null, 'estimado' => !$sl['is_manual'],
                 ];
             }
 
@@ -776,7 +786,31 @@ include 'layout_header.php';
         ];
         ?>
 
-        <?php if ($modo === 'esperado'): ?>
+        <?php
+        $finSem = (clone $lunes)->modify('+6 days');
+        $etiquetaSemana = 'Semana del ' . $lunes->format('d/m') . ' al ' . $finSem->format('d/m')
+            . (($lunes->format('Y') !== date('Y') || $finSem->format('Y') !== date('Y')) ? ' de ' . $finSem->format('Y') : '');
+        ?>
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+            <div class="btn-group btn-group-sm" role="group" aria-label="Cambiar de semana">
+                <a class="btn btn-outline-secondary <?= $semOff <= -52 ? 'disabled' : '' ?>" href="<?= h(url_calendario($calendario, $semOff - 1, $modo)) ?>">
+                    <i class="fas fa-chevron-left me-1"></i> Semana anterior
+                </a>
+                <a class="btn btn-outline-secondary <?= $semOff >= 1 ? 'disabled' : '' ?>" href="<?= h(url_calendario($calendario, $semOff + 1, $modo)) ?>">
+                    Semana siguiente <i class="fas fa-chevron-right ms-1"></i>
+                </a>
+            </div>
+            <div class="fw-semibold">
+                <?= h($etiquetaSemana) ?>
+                <?php if ($semOff === 0): ?>
+                    <span class="badge bg-primary ms-1">Esta semana</span>
+                <?php else: ?>
+                    <a class="btn btn-link btn-sm" href="<?= h(url_calendario($calendario, 0, $modo)) ?>">Volver a esta semana</a>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <?php if ($mostrarAvisos): ?>
             <?php if ($resumen['atrasado']): ?>
                 <div class="alert alert-warning py-2 small">
                     <i class="fas fa-hourglass-half me-1"></i><strong>Atrasados hoy:</strong> <?= h(implode(', ', $resumen['atrasado'])) ?>
@@ -796,12 +830,15 @@ include 'layout_header.php';
             <?php endif; ?>
             <p class="text-muted small mb-3">
                 <i class="fas fa-circle-info me-1"></i>
-                <?= (int) $resumen['subido'] ?> subido(s) esta semana. Un episodio se marca <em>Atrasado</em> si pasan <?= $graciaMin ?> min de la hora esperada.
+                <?= (int) $resumen['subido'] ?> subido(s) <?= $semOff === 0 ? 'esta semana' : 'esa semana' ?>. Un episodio se marca <em>Atrasado</em> si pasan <?= $graciaMin ?> min de la hora esperada.
                 <i class="far fa-clock ms-2 me-1"></i>"~" = horario estimado automáticamente (no fijado a mano).
                 <?php if ($ultimoCalculo): ?> Horarios calculados: <?= h(fecha_corta($ultimoCalculo)) ?>.<?php endif; ?>
             </p>
         <?php else: ?>
-            <p class="text-muted small mb-3"><i class="fas fa-check me-1"></i>Solo se muestran los episodios realmente subidos esta semana (<?= (int) $resumen['subido'] ?>).</p>
+            <p class="text-muted small mb-3">
+                <i class="fas fa-check me-1"></i>Solo se muestran los episodios realmente subidos <?= $semOff === 0 ? 'esta semana' : 'esa semana' ?> (<?= (int) $resumen['subido'] ?>).
+                <?php if ($modo === 'esperado' && $semOff < 0): ?>En semanas anteriores no se muestran avisos de atraso.<?php endif; ?>
+            </p>
         <?php endif; ?>
 
         <div class="row g-3">
@@ -831,8 +868,7 @@ include 'layout_header.php';
                                             </div>
                                         </div>
                                     </div>
-                                    <?php if ($i < $totalDia - 1): ?>
-                                        <hr class="my-3 text-light-emphasis"><?php endif; ?>
+                                    <?php if ($i < $totalDia - 1): ?><hr class="my-3 text-light-emphasis"><?php endif; ?>
                                 <?php endforeach;
                             else: ?>
                                 <div class="text-center py-4 text-muted">

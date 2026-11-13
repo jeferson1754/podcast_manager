@@ -8,7 +8,7 @@ require_once __DIR__ . '/helpers.php';
 /**
  * Recalcula la tabla `schedule` de todos los podcasts no finalizados.
  * - Con schedule_custom ("Martes:12:30,Jueves:18:00") usa ese horario tal cual.
- * - Sin él, lo deduce de los últimos 20 episodios (patrón día+hora repetido 2+ veces).
+ * - Sin él, lo deduce de los últimos 20 episodios (patrón día+hora repetido 2+ veces; mínimo 2 episodios).
  * Cada podcast se procesa en su propia transacción: nunca queda con el horario borrado a medias.
  * Devuelve la cantidad de podcasts procesados.
  */
@@ -41,7 +41,10 @@ function recalcular_horarios(mysqli $conn): int
                 'i',
                 [$podcastId]
             );
-            if (count($eps) < 3) {
+            // Mínimo de episodios para estimar un horario. Con 2 basta si COINCIDEN en día y hora
+            // (el patrón exige repetirse 2+ veces, más abajo). Subir a 3 en config.php para ser más estricto.
+            $minEpisodios = defined('HORARIOS_MIN_EPISODIOS') ? max(2, (int) HORARIOS_MIN_EPISODIOS) : 2;
+            if (count($eps) < $minEpisodios) {
                 continue;
             }
 
